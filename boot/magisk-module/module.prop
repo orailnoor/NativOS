@@ -1,0 +1,6 @@
+id=nativOS_boot_animation
+name=NativOS Boot Animation
+version=1.0.0
+versionCode=1
+author=orailnoor
+description=Replaces the Android boot animation with the NativOS loading screen. Systemless — safe to remove via Magisk.

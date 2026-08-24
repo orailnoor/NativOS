@@ -1,0 +1,12 @@
+./com/termux/x11/input/RenderData.java
+./com/termux/x11/input/InputEventSender.java
+./com/termux/x11/input/InputStub.java
+./com/termux/x11/input/TouchInputHandler.java
+./com/termux/x11/input/SwipeDetector.java
+./com/termux/x11/input/TapGestureDetector.java
+./com/termux/x11/input/InputStrategyInterface.java
+./com/termux/x11/MainActivity.java
+./com/termux/x11/utils/SamsungDexUtils.java
+./com/termux/x11/CmdEntryPoint.java
+./com/termux/x11/LorieView.java
+./com/termux/x11/Prefs.java

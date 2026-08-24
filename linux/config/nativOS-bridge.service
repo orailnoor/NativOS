@@ -1,0 +1,15 @@
+[Unit]
+Description=NativOS Hardware Bridge Client
+Documentation=https://github.com/orailnoor/NativOS
+After=network.target dbus.service
+Wants=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nativOS-bridge --socket /run/nativOS/bridge.sock
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
