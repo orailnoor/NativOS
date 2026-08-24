@@ -120,6 +120,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Keep the native X server and LorieView renderer in separate processes. -->
+        <service
+            android:name=".x11.X11ServerService"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":x11" />
+
         <!-- ── Boot Receiver ── -->
         <receiver
             android:name=".launcher.BootReceiver"
@@ -156,7 +163,4 @@
 
     </application>
 
-    <queries>
-        <package android:name="com.termux.x11" />
-    </queries>
 </manifest>

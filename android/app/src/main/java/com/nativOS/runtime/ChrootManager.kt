@@ -24,6 +24,7 @@ class ChrootManager(private val context: Context) {
     private val baseDir: File get() = context.filesDir
     private val rootfsDir: File get() = File(baseDir, "rootfs")
     private val tmpDir: File get() = File(baseDir, "tmp")
+    private val shmDir: File get() = File(baseDir, "shm")
     private val x11HostDir: File get() = File(tmpDir, ".X11-unix")
     private val bridgeSocketDir: File get() = File(baseDir, "bridge")
 
@@ -61,7 +62,18 @@ class ChrootManager(private val context: Context) {
         // Core filesystem mounts
         mountIfNeeded("/dev", "--bind /dev") { isMounted("dev") }
         mountIfNeeded("/dev/pts", "-t devpts devpts") { isMounted("dev/pts") }
-        mountIfNeeded("/dev/shm", "-t tmpfs tmpfs") { isMounted("dev/shm") }
+        // wlroots sends its X11 framebuffer to the embedded server through
+        // MIT-SHM. An anonymous tmpfs gets the generic tmpfs SELinux label,
+        // which Android denies to our isolated :x11 app process. Keep /dev/shm
+        // on app-owned storage so both the rooted compositor and X11 can use it.
+        shmDir.mkdirs()
+        val chrootShmDir = File(rootfsDir, "dev/shm").absolutePath
+        val shmMount = mounts.firstOrNull { it.contains(" on $chrootShmDir ") }
+        if (shmMount == null || !shmMount.startsWith("${shmDir.absolutePath} ")) {
+            if (shmMount != null) rootShell.exec("umount $chrootShmDir")
+            rootShell.exec("mkdir -p $chrootShmDir && mount --bind ${shmDir.absolutePath} $chrootShmDir")
+            Log.i(TAG, "Bound app-owned shared memory directory into chroot")
+        }
         mountIfNeeded("/proc", "--bind /proc") { isMounted("proc") }
         mountIfNeeded("/sys", "--bind /sys") { isMounted("sys") }
         mountIfNeeded("/run", "-t tmpfs tmpfs") { isMounted("run") }
@@ -212,8 +224,9 @@ PHOCEOF
                 
                 # CRITICAL: Set TMPDIR to match the Android app's TMPDIR
                 # libsocket_hook.so uses TMPDIR to construct the abstract socket path
-                # Termux:X11 creates abstract socket at: @<TMPDIR>/.X11-unix/X0
-                export TMPDIR=/tmp
+                # The bundled X11 server (libXlorie.so) creates abstract socket at: @<TMPDIR>/.X11-unix/X0
+                # Both sides MUST use the same TMPDIR value for the abstract socket path to match
+                export TMPDIR=${tmpDir.absolutePath}
                 
                 # LD_PRELOAD: Only load libraries that actually exist on this device
                 # libsocket_hook.so translates filesystem connect() to abstract socket

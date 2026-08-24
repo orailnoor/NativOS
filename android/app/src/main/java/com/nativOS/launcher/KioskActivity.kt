@@ -10,7 +10,9 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.SurfaceHolder
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -21,6 +23,12 @@ import android.widget.TextView
 import com.nativOS.bridge.BridgeService
 import com.nativOS.runtime.ChrootManager
 import com.nativOS.runtime.RootfsManager
+import com.nativOS.x11.X11ServiceClient
+import com.nativOS.x11.X11InputController
+import com.termux.x11.MainActivity
+import com.termux.x11.LorieView
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Full-screen kiosk activity that replaces the Android home screen.
@@ -44,6 +52,8 @@ class KioskActivity : Activity() {
 
     private lateinit var chrootManager: ChrootManager
     private lateinit var rootfsManager: RootfsManager
+    private var x11ServiceClient: X11ServiceClient? = null
+    private var x11InputController: X11InputController? = null
     private val volumeUpTimestamps = mutableListOf<Long>()
 
     // Error flag — set by lambda callbacks to halt the boot sequence
@@ -292,55 +302,99 @@ class KioskActivity : Activity() {
                 updateOverlay(0.95, "Phosh desktop found", "")
             }
 
-            // Step 5: Start the Termux:X11 display server
-            updateOverlay(0.95, "Starting Display Server...", "Launching Termux:X11")
+            // Step 5: Attach the display surface to the bundled X11 service process.
+            updateOverlay(0.95, "Starting Display Server...", "Initializing X11")
             
-            if (!isTermuxX11Installed()) {
-                runOnUiThread {
-                    updateOverlay(-1.0, "Display Server Missing", "Termux:X11 is required to render the Linux desktop")
-                    
-                    val btn = android.widget.Button(this@KioskActivity).apply {
-                        text = "Download Termux:X11 from GitHub"
-                        setOnClickListener {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/termux/termux-x11/releases/tag/nightly"))
-                            startActivity(intent)
-                        }
-                    }
-                    val params = android.widget.LinearLayout.LayoutParams(
-                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        setMargins(0, 50, 0, 0)
-                    }
-                    overlayLayout?.addView(btn, params)
+            // Android Views and the Termux Activity shim must be created on the UI thread.
+            lateinit var lorieView: LorieView
+            var viewCreationError: Throwable? = null
+            val viewCreated = CountDownLatch(1)
+            val surfaceReady = CountDownLatch(1)
+            val surfaceReadyCallback = object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    surfaceReady.countDown()
                 }
-                return // Halt the boot sequence
+
+                override fun surfaceChanged(
+                    holder: SurfaceHolder,
+                    format: Int,
+                    width: Int,
+                    height: Int
+                ) {
+                    surfaceReady.countDown()
+                }
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
             }
+
+            runOnUiThread {
+                try {
+                    val x11Activity = MainActivity.getInstance()
+                    x11Activity.initLorieView(this@KioskActivity)
+                    lorieView = x11Activity.lorieView
+                    lorieView.holder.addCallback(surfaceReadyCallback)
+                    (lorieView.parent as? ViewGroup)?.removeView(lorieView)
+                    lorieView.layoutParams = FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                    lorieView.setZOrderOnTop(false)
+                    rootLayout?.addView(lorieView, 0)
+                } catch (error: Throwable) {
+                    viewCreationError = error
+                } finally {
+                    viewCreated.countDown()
+                }
+            }
+
+            if (!viewCreated.await(10, TimeUnit.SECONDS)) {
+                throw IllegalStateException("Timed out creating the X11 display surface")
+            }
+            viewCreationError?.let { throw it }
+
+            if (!surfaceReady.await(10, TimeUnit.SECONDS)) {
+                lorieView.holder.removeCallback(surfaceReadyCallback)
+                throw IllegalStateException("Timed out waiting for the X11 display surface")
+            }
+            lorieView.holder.removeCallback(surfaceReadyCallback)
             
-            Runtime.getRuntime().exec(arrayOf("su", "-c", "am force-stop com.termux.x11")).waitFor()
-            launchTermuxX11()
-            startTermuxX11Server()
-            Thread.sleep(3000) // Give X server time to stabilize and create socket
+            val rendererAttached = CountDownLatch(1)
+            var rendererError: Throwable? = null
+            x11ServiceClient = X11ServiceClient(
+                context = this,
+                onConnected = { connectionFd, logcatFd ->
+                    try {
+                        LorieView.connect(connectionFd.detachFd())
+                        logcatFd?.let { LorieView.startLogcat(it.detachFd()) }
+                        x11InputController = X11InputController(lorieView)
+                        lorieView.requestFocus()
+                        Log.i(TAG, "LorieView attached to the bundled X11 service")
+                        rendererAttached.countDown()
+                    } catch (error: Throwable) {
+                        rendererError = error
+                        connectionFd.close()
+                        logcatFd?.close()
+                        rendererAttached.countDown()
+                    }
+                },
+                onError = { message, error ->
+                    rendererError = IllegalStateException(message, error)
+                    rendererAttached.countDown()
+                }
+            ).also { it.connect() }
+
+            if (!rendererAttached.await(10, TimeUnit.SECONDS) || !LorieView.connected()) {
+                throw rendererError
+                    ?: IllegalStateException("LorieView failed to attach to the X11 server")
+            }
 
             runOnUiThread { overlayLayout?.visibility = View.GONE }
 
             Log.i(TAG, "Starting test session...")
 
-            // Detect the device's real screen resolution for universal device support
-            val windowManager = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
-            val screenWidth: Int
-            val screenHeight: Int
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                val bounds = windowManager.currentWindowMetrics.bounds
-                screenWidth = bounds.width()
-                screenHeight = bounds.height()
-            } else {
-                val displayMetrics = android.util.DisplayMetrics()
-                @Suppress("DEPRECATION")
-                windowManager.defaultDisplay.getRealMetrics(displayMetrics)
-                screenWidth = displayMetrics.widthPixels
-                screenHeight = displayMetrics.heightPixels
-            }
+            // Match Phoc's nested output to the actual X11 surface dimensions.
+            val screenWidth = lorieView.width
+            val screenHeight = lorieView.height
             Log.i(TAG, "Detected screen: ${screenWidth}x${screenHeight}")
 
             chrootManager.startPhoshSession(screenWidth, screenHeight)
@@ -348,84 +402,6 @@ class KioskActivity : Activity() {
         } catch (e: Exception) {
             Log.e(TAG, "Boot sequence failed", e)
             updateOverlay(-1.0, "Boot failed: ${e.message}", "Press Vol Up x5 to escape to Android")
-        }
-    }
-
-    private fun isTermuxX11Installed(): Boolean {
-        return try {
-            packageManager.getPackageInfo("com.termux.x11", 0)
-            true
-        } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
-            false
-        }
-    }
-
-    private fun installTermuxX11() {
-        try {
-            val apkUrl = "https://github.com/termux/termux-x11/releases/download/nightly/termux-x11-universal-debug.apk"
-            val tmpApk = "/data/local/tmp/termux-x11.apk"
-            Log.i(TAG, "Downloading Termux:X11 APK...")
-            val dlCmd = "su -c 'curl -L -o $tmpApk $apkUrl && pm install -r -d -g $tmpApk && rm $tmpApk'"
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", dlCmd))
-            process.waitFor()
-            if (process.exitValue() == 0) {
-                Log.i(TAG, "Successfully installed Termux:X11")
-            } else {
-                Log.e(TAG, "Failed to install Termux:X11 (exit code ${process.exitValue()})")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception installing Termux:X11", e)
-        }
-    }
-
-    private fun launchTermuxX11() {
-        try {
-            val intent = packageManager.getLaunchIntentForPackage("com.termux.x11")
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                startActivity(intent)
-                Log.i(TAG, "Launched Termux:X11 app")
-            } else {
-                Log.e(TAG, "Could not get launch intent for Termux:X11")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch Termux:X11", e)
-        }
-    }
-
-    private fun startTermuxX11Server() {
-        try {
-            val loaderFile = java.io.File(filesDir, "loader.apk")
-            if (!loaderFile.exists()) {
-                assets.open("loader.apk").use { input ->
-                    loaderFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-            }
-            
-            val rootfsXkb = java.io.File(filesDir, "rootfs/usr/share/X11/xkb")
-            
-            val cmd = StringBuilder()
-            cmd.append("su -c '")
-            cmd.append("killall -9 app_process; killall -9 phoc; killall -9 phosh; killall -9 dbus-run-session; rm -rf /data/local/tmp/xkb && cp -r ${rootfsXkb.absolutePath} /data/local/tmp/xkb && chmod -R 755 /data/local/tmp/xkb && ")
-            cmd.append("export TMPDIR=/data/local/tmp && ")
-            cmd.append("export XKB_CONFIG_ROOT=/data/local/tmp/xkb && ")
-            cmd.append("/system/bin/app_process -cp ${loaderFile.absolutePath} / com.termux.x11.Loader :0 -legacy-drawing")
-            cmd.append("'")
-            
-            Thread {
-                try {
-                    val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd.toString()))
-                    process.waitFor()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Termux:X11 server crashed", e)
-                }
-            }.start()
-            
-            Log.i(TAG, "Termux:X11 server started")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start Termux:X11 server", e)
         }
     }
 
