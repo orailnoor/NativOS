@@ -59,6 +59,10 @@ class ChrootManager(private val context: Context) {
     fun ensureMounts() {
         if (!hasRoot()) return
 
+        // Services such as polkit drop root privileges and must still be able to
+        // enter the chroot root. Android's private parent directory remains 0700.
+        rootShell.exec("chmod 755 ${rootfsDir.absolutePath}")
+
         val mounts = rootShell.exec("mount").lines()
         fun isMounted(path: String): Boolean {
             val absolute = File(rootfsDir, path).absolutePath
@@ -328,6 +332,21 @@ class ChrootManager(private val context: Context) {
             mkdir -p /tmp/runtime-root
             chown root:root /tmp/runtime-root
             chmod 0700 /tmp/runtime-root
+
+            # GNOME Software and PackageKit require a system bus. There is no
+            # systemd in this chroot, so start D-Bus and polkit explicitly.
+            mkdir -p /run/dbus
+            rm -f /run/dbus/pid /run/dbus/system_bus_socket
+            dbus-uuidgen --ensure
+            if dbus-daemon --system --fork --nopidfile; then
+                echo "NativOS: System D-Bus started"
+                if [ -x /usr/lib/polkit-1/polkitd ]; then
+                    /usr/lib/polkit-1/polkitd --no-debug &
+                    echo "NativOS: polkit started"
+                fi
+            else
+                echo "NativOS: WARNING — system D-Bus failed to start"
+            fi
 
             # Set root password to 1234 so lockscreen can be unlocked
             echo 'root:1234' | chpasswd
