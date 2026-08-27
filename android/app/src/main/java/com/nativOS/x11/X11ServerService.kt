@@ -55,17 +55,17 @@ class X11ServerService : Service() {
             latch = startLatch ?: CountDownLatch(1).also { created ->
                 startLatch = created
                 serverHandler.post {
-                    startSucceeded = try {
+                    val success = try {
                         configureEnvironment()
                         Log.i(TAG, "Starting native X server in pid=${android.os.Process.myPid()}")
                         CmdEntryPoint.start(arrayOf(":0", "-nolock", "-legacy-drawing"))
                     } catch (error: Throwable) {
                         Log.e(TAG, "Native X server failed to start", error)
                         false
-                    } finally {
-                        started = true
-                        created.countDown()
                     }
+                    startSucceeded = success
+                    started = true
+                    created.countDown()
                     Log.i(TAG, "Native X server start result=$startSucceeded")
                 }
             }

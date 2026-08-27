@@ -193,10 +193,10 @@ class RootfsManager(private val context: Context) {
             chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends phoc phosh")
 
             onProgress(0.40, "Installing GUI Dependencies...")
-            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends squeekboard gnome-settings-daemon gnome-settings-daemon-common librsvg2-common gnome-terminal adwaita-icon-theme fonts-cantarell")
+            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends squeekboard phosh-mobile-settings gnome-settings-daemon gnome-settings-daemon-common librsvg2-common gnome-terminal adwaita-icon-theme fonts-cantarell")
 
             onProgress(0.55, "Installing compilation tools...")
-            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends gcc libxcb1-dev libxcb-dri3-dev libc6-dev xterm wget curl")
+            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends gcc libxcb1-dev libxcb-dri3-dev libc6-dev libvulkan1 vulkan-tools xterm wget curl")
 
             onProgress(0.70, "Building universal hooks (Socket)...")
             chrootManager.execChroot("""
@@ -252,8 +252,21 @@ EOF
 gcc -shared -fPIC -o /usr/local/lib/libnodri3.so /tmp/nodri3.c -lxcb -ldl -lxcb-dri3"
             """.trimIndent())
 
+            chrootManager.execChroot("""
+                bash -c "cat > /tmp/close_range_compat.c << 'EOF'
+#define _GNU_SOURCE
+#include <errno.h>
+int close_range(unsigned int first, unsigned int last, int flags) {
+    (void) first; (void) last; (void) flags;
+    errno = ENOSYS;
+    return -1;
+}
+EOF
+gcc -shared -fPIC -o /usr/local/lib/libnativos-close-range.so /tmp/close_range_compat.c"
+            """.trimIndent())
+
             onProgress(0.90, "Installing Built-in Apps & Store...")
-            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends software-properties-common nautilus gnome-control-center gnome-calculator gnome-clocks megapixels gnome-software gnome-software-plugin-flatpak flatpak")
+            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends software-properties-common nautilus gnome-calculator gnome-clocks megapixels gnome-software gnome-software-plugin-flatpak flatpak")
 
             onProgress(0.95, "Setting up Firefox & Flathub...")
             chrootManager.execChroot("""

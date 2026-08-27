@@ -3,6 +3,7 @@ package com.nativOS.runtime
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Manages the chroot Ubuntu filesystem: mounting, session lifecycle,
@@ -15,6 +16,9 @@ class ChrootManager(private val context: Context) {
 
     companion object {
         private const val TAG = "NativOS.ChrootManager"
+        private const val TURNIP_VERSION = "25.0.7"
+        private const val TURNIP_ASSET = "gpu/mesa-vulkan-drivers-kgsl-25.0.7-arm64.deb"
+        private const val TURNIP_SHA256 = "66b11a94835f66e80efc8556477334a14dc68456a76e31ada3cd2d440869c5d5"
 
         @Volatile private var sessionProcess: Process? = null
     }
@@ -27,6 +31,8 @@ class ChrootManager(private val context: Context) {
     private val shmDir: File get() = File(baseDir, "shm")
     private val x11HostDir: File get() = File(tmpDir, ".X11-unix")
     private val bridgeSocketDir: File get() = File(baseDir, "bridge")
+    private val turnipRoot: File get() = File(rootfsDir, "opt/nativos-gpu/turnip-$TURNIP_VERSION")
+    private val turnipIcd: File get() = File(turnipRoot, "usr/share/vulkan/icd.d/freedreno_icd.aarch64.json")
 
     // ── Status ──
 
@@ -129,6 +135,106 @@ class ChrootManager(private val context: Context) {
         }
     }
 
+    /** Install and validate the bundled KGSL Turnip driver on Adreno devices. */
+    private fun prepareHardwareGpu(): Boolean {
+        if (!File("/dev/kgsl-3d0").exists()) {
+            Log.i(TAG, "No KGSL device; using portable software rendering")
+            return false
+        }
+
+        return try {
+            val archive = File(baseDir, "gpu/mesa-vulkan-drivers-kgsl-$TURNIP_VERSION-arm64.deb")
+            if (!archive.exists() || sha256(archive) != TURNIP_SHA256) {
+                archive.parentFile?.mkdirs()
+                context.assets.open(TURNIP_ASSET).use { input ->
+                    archive.outputStream().use { output -> input.copyTo(output) }
+                }
+            }
+            if (sha256(archive) != TURNIP_SHA256) {
+                Log.e(TAG, "Bundled Turnip archive failed checksum validation")
+                return false
+            }
+
+            val library = File(turnipRoot, "usr/lib/aarch64-linux-gnu/libvulkan_freedreno.so")
+            if (!library.exists() || !turnipIcd.exists()) {
+                val root = turnipRoot.absolutePath.removePrefix(rootfsDir.absolutePath)
+                val archiveInChroot = archive.absolutePath
+                val installCommand = """
+                    mkdir -p $root &&
+                    dpkg-deb -x $archiveInChroot $root &&
+                    sed -i 's#/usr/lib/aarch64-linux-gnu/libvulkan_freedreno.so#$root/usr/lib/aarch64-linux-gnu/libvulkan_freedreno.so#' $root/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json
+                """.trimIndent().replace("\n", " ")
+                if (execChroot(installCommand) != 0) {
+                    Log.e(TAG, "Could not extract bundled Turnip driver")
+                    return false
+                }
+            }
+
+            val available = library.exists() && turnipIcd.exists()
+            if (!available) {
+                Log.w(TAG, "Turnip driver unavailable; using software")
+                return false
+            }
+
+            val icd = turnipIcd.absolutePath.removePrefix(rootfsDir.absolutePath)
+            val probe = "command -v vulkaninfo >/dev/null 2>&1 && " +
+                "VK_ICD_FILENAMES=$icd TU_DEBUG=noconform " +
+                "timeout 10s vulkaninfo --summary >/dev/null 2>&1"
+            if (execChroot(probe) != 0) {
+                Log.w(TAG, "Turnip Vulkan probe failed; using software rendering")
+                return false
+            }
+
+            Log.i(TAG, "Turnip KGSL driver ready")
+            true
+        } catch (error: Throwable) {
+            Log.w(TAG, "GPU setup failed; using software rendering", error)
+            false
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** Make modern GLib app launching work on kernels with partial close_range support. */
+    private fun prepareCloseRangeCompatibility() {
+        val library = File(rootfsDir, "usr/local/lib/libnativos-close-range.so")
+        if (library.exists()) return
+
+        try {
+            val source = File(baseDir, "compat/close_range.c")
+            source.parentFile?.mkdirs()
+            source.writeText(
+                """
+                #define _GNU_SOURCE
+                #include <errno.h>
+                int close_range(unsigned int first, unsigned int last, int flags) {
+                    (void) first; (void) last; (void) flags;
+                    errno = ENOSYS;
+                    return -1;
+                }
+                """.trimIndent()
+            )
+            val result = execChroot(
+                "mkdir -p /usr/local/lib && " +
+                    "gcc -shared -fPIC -o /usr/local/lib/libnativos-close-range.so ${source.absolutePath}"
+            )
+            if (result != 0) Log.w(TAG, "Could not build close_range compatibility shim")
+        } catch (error: Throwable) {
+            Log.w(TAG, "Could not prepare close_range compatibility shim", error)
+        }
+    }
+
     // ── Session management ──
 
     /**
@@ -154,6 +260,45 @@ class ChrootManager(private val context: Context) {
 
         ensureMounts()
         bindX11Socket()
+        prepareCloseRangeCompatibility()
+
+        val hardwareGpu = prepareHardwareGpu()
+        val gpuEnvironment = if (hardwareGpu) {
+            """
+                export NATIVOS_GPU=turnip
+                # Termux:X11 legacy drawing does not provide wlroots with a DRI3
+                # DRM fd. Keep the compositor on Pixman while applications use
+                # hardware-accelerated Zink/Turnip.
+                export WLR_RENDERER=pixman
+                unset LIBGL_ALWAYS_SOFTWARE
+                unset GBM_ALWAYS_SOFTWARE
+                export GALLIUM_DRIVER=zink
+                export MESA_LOADER_DRIVER_OVERRIDE=zink
+                export VK_ICD_FILENAMES=${turnipIcd.absolutePath.removePrefix(rootfsDir.absolutePath)}
+                export TU_DEBUG=noconform
+                export ZINK_DESCRIPTORS=lazy
+                export MESA_VK_WSI_DEBUG=sw
+            """.trimIndent()
+        } else {
+            """
+                export NATIVOS_GPU=software
+                export WLR_RENDERER=pixman
+                export LIBGL_ALWAYS_SOFTWARE=1
+                export GBM_ALWAYS_SOFTWARE=1
+                export GALLIUM_DRIVER=llvmpipe
+                export MESA_LOADER_DRIVER_OVERRIDE=swrast
+            """.trimIndent()
+        }
+        // Embedded X11 legacy drawing cannot return a DRM fd from DRI3. Hide the
+        // extension so wlroots selects its shared-memory path. Zink still renders
+        // on Turnip and presents through MESA_VK_WSI_DEBUG=sw.
+        val preloadLibraries =
+            "/usr/local/lib/libsocket_hook.so /usr/local/lib/libnativos-close-range.so /usr/local/lib/libnodri3.so /usr/local/lib/libandroid-shmem.so"
+        val appPreloadLibraries = if (hardwareGpu) {
+            "/usr/local/lib/libsocket_hook.so /usr/local/lib/libnativos-close-range.so /usr/local/lib/libandroid-shmem.so"
+        } else {
+            preloadLibraries
+        }
 
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val runScript = """
@@ -163,13 +308,21 @@ class ChrootManager(private val context: Context) {
             export HOME=/root
             export XDG_RUNTIME_DIR=/tmp/runtime-root
             export XDG_SESSION_TYPE=x11
+            export XDG_CURRENT_DESKTOP=Phosh
+            export XDG_SESSION_DESKTOP=phosh
+            export DESKTOP_SESSION=phosh
             export XDG_DATA_DIRS=/usr/share:/usr/local/share
             export XDG_CONFIG_DIRS=/etc/xdg
             export DISPLAY=:0
             export LANG=C.UTF-8
             export LC_ALL=C.UTF-8
+            export GTK_A11Y=none
+            # GTK4's GL renderer requires dmabuf support that the nested X11
+            # backend cannot expose. Cairo keeps GTK windows visible while GL
+            # applications continue to use Zink/Turnip.
+            export GSK_RENDERER=cairo
             export WLR_NO_HARDWARE_CURSORS=1
-            export LIBGL_ALWAYS_SOFTWARE=1
+            $gpuEnvironment
 
             # Ensure runtime dir exists with correct permissions
             mkdir -p /tmp/runtime-root
@@ -213,13 +366,10 @@ PHOCEOF
                 # Configure wlroots X11 backend
                 export WLR_BACKENDS=x11
                 export WLR_X11_OUTPUTS=1
-                export WLR_RENDERER=pixman
                 export DISPLAY=:0
                 
-                # Disable DRI3/GPU features that crash inside chroot
+                # The X11 backend never owns Android's physical DRM display.
                 export WLR_DRM_NO_ATOMIC=1
-                export GBM_ALWAYS_SOFTWARE=1
-                export MESA_LOADER_DRIVER_OVERRIDE=swrast
                 export WLR_DRM_DEVICES=""
                 
                 # CRITICAL: Set TMPDIR to match the Android app's TMPDIR
@@ -230,10 +380,10 @@ PHOCEOF
                 
                 # LD_PRELOAD: Only load libraries that actually exist on this device
                 # libsocket_hook.so translates filesystem connect() to abstract socket
-                # libnodri3.so blocks DRI3 extension (not available in chroot)
+                # libnodri3.so makes wlroots use X11 shared-memory presentation.
                 # libandroid-shmem.so provides shared memory on Android kernels
                 PRELOAD=""
-                for lib in /usr/local/lib/libsocket_hook.so /usr/local/lib/libnodri3.so /usr/local/lib/libandroid-shmem.so; do
+                for lib in $preloadLibraries; do
                     if [ -f "${'$'}lib" ]; then
                         if [ -z "${'$'}PRELOAD" ]; then
                             PRELOAD="${'$'}lib"
@@ -248,15 +398,30 @@ PHOCEOF
                 else
                     echo "NativOS: No LD_PRELOAD libraries found (fresh install)"
                 fi
+
+                # Phoc needs libnodri3, but hardware-accelerated applications do
+                # not. Phosh replaces LD_PRELOAD before launching the app session.
+                APP_PRELOAD=""
+                for lib in $appPreloadLibraries; do
+                    if [ -f "${'$'}lib" ]; then
+                        if [ -z "${'$'}APP_PRELOAD" ]; then
+                            APP_PRELOAD="${'$'}lib"
+                        else
+                            APP_PRELOAD="${'$'}APP_PRELOAD:${'$'}lib"
+                        fi
+                    fi
+                done
+                export NATIVOS_APP_LD_PRELOAD="${'$'}APP_PRELOAD"
                 
                 echo "NativOS: TMPDIR=${'$'}TMPDIR"
                 echo "NativOS: DISPLAY=${'$'}DISPLAY"
+                echo "NativOS: GPU=${'$'}NATIVOS_GPU"
                 
                 cat > /tmp/start_phosh.sh << 'PHOSHEOF'
 #!/bin/bash
 echo $$ > /tmp/phosh_loop.pid
 while true; do
-    dbus-run-session -- phoc -C /etc/nativOS/phoc.ini -E "bash -c 'exec /usr/libexec/phosh -U'"
+    dbus-run-session -- phoc -C /etc/nativOS/phoc.ini -E "bash -c 'export LD_PRELOAD=${'$'}NATIVOS_APP_LD_PRELOAD; exec /usr/libexec/phosh -U'"
     echo "NativOS: Phoc exited, restarting in 2 seconds..."
     sleep 2
 done
