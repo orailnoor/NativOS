@@ -591,7 +591,10 @@ PHOSHEOF
 
     /** Execute a command inside the chroot as root. */
     fun execChroot(command: String, onLog: (String) -> Unit = {}): Int {
-        val wrapped = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; $command"
+        // Never inherit Android's TMPDIR (normally /data/local/tmp): that path
+        // does not exist inside the chroot and breaks GPG/Flatpak temporary dirs.
+        val wrapped = "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; " +
+            "export TMPDIR=/tmp HOME=/root; $command"
         val output = rootShell.exec("chroot ${rootfsDir.absolutePath} /bin/bash -c ${shellQuote(wrapped)}") { chunk ->
             Log.d(TAG, "chroot: ${chunk.trimEnd()}")
             onLog(chunk)

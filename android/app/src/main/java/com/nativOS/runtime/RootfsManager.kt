@@ -45,6 +45,31 @@ class RootfsManager(private val context: Context) {
 
     fun isSetupComplete(): Boolean = setupCompleteFile.exists()
 
+    fun isFlatpakInstalled(): Boolean = File(rootfsDir, "usr/bin/flatpak").exists()
+
+    /** Add or repair the signed per-user Flathub remote used by GNOME Software. */
+    fun ensureFlathub(chrootManager: ChrootManager): Boolean {
+        if (!isFlatpakInstalled()) return false
+        val result = chrootManager.execChroot(
+            """
+                mkdir -p /root/.gnupg
+                chmod 0700 /root/.gnupg
+                if flatpak --user remotes --columns=name 2>/dev/null | grep -Fxq flathub &&
+                   test -s /root/.local/share/flatpak/repo/flathub.trustedkeys.gpg; then
+                    exit 0
+                fi
+                flatpak --user remote-delete --force flathub 2>/dev/null || true
+                timeout 60s flatpak --user remote-add flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+            """.trimIndent()
+        )
+        if (result == 0) {
+            Log.i(TAG, "Flathub remote ready")
+        } else {
+            Log.w(TAG, "Could not configure Flathub (exit $result)")
+        }
+        return result == 0
+    }
+
     fun downloadRootfs(
         distro: String = DEFAULT_DISTRO,
         onProgress: (progress: Double, status: String) -> Unit
@@ -268,10 +293,13 @@ gcc -shared -fPIC -o /usr/local/lib/libnativos-close-range.so /tmp/close_range_c
             onProgress(0.90, "Installing Built-in Apps & Store...")
             chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends software-properties-common nautilus gnome-calculator gnome-clocks megapixels gnome-software gnome-software-plugin-flatpak flatpak")
 
-            onProgress(0.95, "Setting up Firefox & Flathub...")
+            onProgress(0.95, "Setting up Firefox...")
             chrootManager.execChroot("""
-                bash -c "add-apt-repository -y ppa:mozillateam/ppa && echo 'Package: *\nPin: release o=LP-PPA-mozillateam\nPin-Priority: 1001\n\nPackage: firefox\nPin: version 1:1snap1-0ubuntu2\nPin-Priority: -1' > /etc/apt/preferences.d/mozilla-firefox && apt-get update && TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends firefox && flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo"
+                bash -c "add-apt-repository -y ppa:mozillateam/ppa && echo 'Package: *\nPin: release o=LP-PPA-mozillateam\nPin-Priority: 1001\n\nPackage: firefox\nPin: version 1:1snap1-0ubuntu2\nPin-Priority: -1' > /etc/apt/preferences.d/mozilla-firefox && apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends firefox"
             """.trimIndent())
+
+            onProgress(0.97, "Configuring Flathub...")
+            ensureFlathub(chrootManager)
 
             onProgress(0.98, "Building icon caches...")
             chrootManager.execChroot("""

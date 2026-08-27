@@ -303,6 +303,13 @@ class KioskActivity : Activity() {
                 updateOverlay(0.95, "Phosh desktop found", "")
             }
 
+            // Migrate existing installations that have Flatpak but were created
+            // before Flathub setup became independent from Firefox provisioning.
+            if (rootfsManager.isFlatpakInstalled()) {
+                updateOverlay(0.95, "Checking app catalog...", "Flathub")
+                rootfsManager.ensureFlathub(chrootManager)
+            }
+
             // Step 5: Attach the display surface to the bundled X11 service process.
             updateOverlay(0.95, "Starting Display Server...", "Initializing X11")
             
