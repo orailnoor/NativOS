@@ -25,6 +25,7 @@ import com.nativOS.runtime.ChrootManager
 import com.nativOS.runtime.RootfsManager
 import com.nativOS.x11.X11ServiceClient
 import com.nativOS.x11.X11InputController
+import com.nativOS.x11.X11ServerService
 import com.termux.x11.MainActivity
 import com.termux.x11.LorieView
 import java.util.concurrent.CountDownLatch
@@ -388,8 +389,6 @@ class KioskActivity : Activity() {
                     ?: IllegalStateException("LorieView failed to attach to the X11 server")
             }
 
-            runOnUiThread { overlayLayout?.visibility = View.GONE }
-
             Log.i(TAG, "Starting test session...")
 
             // Match Phoc's nested output to the actual X11 surface dimensions.
@@ -398,6 +397,11 @@ class KioskActivity : Activity() {
             Log.i(TAG, "Detected screen: ${screenWidth}x${screenHeight}")
 
             chrootManager.startPhoshSession(screenWidth, screenHeight)
+            updateOverlay(0.98, "Starting Linux desktop...", "Waiting for Phosh")
+            if (!chrootManager.awaitDesktopReady()) {
+                throw IllegalStateException("Phosh did not become ready")
+            }
+            runOnUiThread { overlayLayout?.visibility = View.GONE }
 
         } catch (e: Exception) {
             Log.e(TAG, "Boot sequence failed", e)
@@ -480,7 +484,14 @@ class KioskActivity : Activity() {
     }
 
     override fun onDestroy() {
+        x11ServiceClient?.disconnect()
+        x11ServiceClient = null
+        x11InputController = null
+        stopService(Intent(this, X11ServerService::class.java))
+        if (::chrootManager.isInitialized) {
+            Thread({ chrootManager.stopSession() }, "nativOS-stop").start()
+        }
         super.onDestroy()
-        Log.i(TAG, "KioskActivity destroyed (session continues in background)")
+        Log.i(TAG, "KioskActivity destroyed; stopping display session")
     }
 }

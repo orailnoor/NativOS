@@ -244,6 +244,7 @@ class ChrootManager(private val context: Context) {
      * @param screenWidth  The device's real screen width in pixels
      * @param screenHeight The device's real screen height in pixels
      */
+    @Synchronized
     fun startPhoshSession(screenWidth: Int = 1080, screenHeight: Int = 2160) {
         if (!hasRoot()) {
             Log.e(TAG, "Cannot start session without root")
@@ -253,10 +254,9 @@ class ChrootManager(private val context: Context) {
             Log.e(TAG, "Rootfs not ready")
             return
         }
-        if (isRunning()) {
-            Log.w(TAG, "Session already running")
-            return
-        }
+        if (isRunning()) Log.w(TAG, "Replacing existing tracked session")
+        stopTrackedSessionProcess()
+        killRootfsProcesses()
 
         ensureMounts()
         bindX11Socket()
@@ -461,18 +461,82 @@ PHOSHEOF
         }.start()
     }
 
-    /** Stop the chroot session and unmount bind mounts. */
-    fun stopSession() {
-        Log.i(TAG, "Stopping session...")
-        sessionProcess?.let {
+    /** Wait until both the Wayland socket and Phosh process exist. */
+    fun awaitDesktopReady(timeoutMs: Long = 20_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (sessionProcess?.isAlive != true) return false
+            if (execChroot(
+                    "test -S /tmp/runtime-root/wayland-0 && " +
+                        "(pgrep -x phosh >/dev/null 2>&1 || pidof phosh >/dev/null 2>&1)"
+                ) == 0
+            ) {
+                Log.i(TAG, "Desktop readiness check passed")
+                // The process and socket appear just before Phosh commits its first
+                // frame. Keep the splash visible through that short final gap.
+                Thread.sleep(500)
+                return true
+            }
             try {
-                it.destroyForcibly()
-                it.waitFor()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error stopping session: ${e.message}")
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        Log.e(TAG, "Desktop did not become ready within ${timeoutMs}ms")
+        return false
+    }
+
+    private fun stopTrackedSessionProcess() {
+        sessionProcess?.let { process ->
+            try {
+                process.destroyForcibly()
+                process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (error: Exception) {
+                Log.w(TAG, "Error stopping tracked session: ${error.message}")
             }
         }
         sessionProcess = null
+    }
+
+    /** Kill only processes whose filesystem root is this app's chroot. */
+    private fun killRootfsProcesses() {
+        val root = rootfsDir.absolutePath
+        val command = """
+            targets=''
+            for proc in /proc/[0-9]*; do
+                [ "${'$'}proc/root" -ef '$root' ] 2>/dev/null || continue
+                targets="${'$'}targets ${'$'}{proc#/proc/}"
+            done
+            if [ -n "${'$'}targets" ]; then
+                kill -TERM ${'$'}targets 2>/dev/null || true
+                sleep 1
+                for pid in ${'$'}targets; do
+                    [ "/proc/${'$'}pid/root" -ef '$root' ] 2>/dev/null &&
+                        kill -KILL "${'$'}pid" 2>/dev/null || true
+                done
+            fi
+        """.trimIndent()
+        try {
+            val result = rootShell.exec(command) { output ->
+                if (output.isNotBlank()) Log.d(TAG, "cleanup: ${output.trimEnd()}")
+            }
+            if (result == 0) {
+                Log.i(TAG, "Cleared stale chroot processes")
+            } else {
+                Log.w(TAG, "Stale chroot cleanup exited with code $result")
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not clear stale chroot processes", error)
+        }
+    }
+
+    /** Stop the chroot session and unmount bind mounts. */
+    fun stopSession() {
+        Log.i(TAG, "Stopping session...")
+        stopTrackedSessionProcess()
+        killRootfsProcesses()
         unmountAll()
         Log.i(TAG, "Session stopped")
     }
