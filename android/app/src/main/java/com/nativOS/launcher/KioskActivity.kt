@@ -11,6 +11,7 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
@@ -234,6 +235,7 @@ class KioskActivity : Activity() {
             visibility = View.GONE
             setOnClickListener { MainActivity.toggleKeyboardVisibility(this@KioskActivity) }
         }
+        makeDraggable(keyboardButton!!)
         rootLayout!!.addView(keyboardButton, FrameLayout.LayoutParams(
             (52 * density).toInt(),
             (48 * density).toInt(),
@@ -252,6 +254,45 @@ class KioskActivity : Activity() {
 
         startBridgeService()
         Thread(Runnable { runBootSequence() }, "nativOS-boot").start()
+    }
+
+    private fun makeDraggable(view: View) {
+        val dragThreshold = 6f * resources.displayMetrics.density
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0f
+        var startY = 0f
+        var dragged = false
+
+        view.setOnTouchListener { target, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = target.x
+                    startY = target.y
+                    dragged = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    if (kotlin.math.abs(dx) > dragThreshold || kotlin.math.abs(dy) > dragThreshold) {
+                        dragged = true
+                    }
+                    val parent = target.parent as? View ?: return@setOnTouchListener true
+                    target.x = (startX + dx).coerceIn(0f, (parent.width - target.width).coerceAtLeast(0).toFloat())
+                    target.y = (startY + dy).coerceIn(0f, (parent.height - target.height).coerceAtLeast(0).toFloat())
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!dragged) target.performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
     }
 
     private fun runBootSequence() {

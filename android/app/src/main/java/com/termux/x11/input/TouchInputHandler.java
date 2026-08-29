@@ -107,6 +107,7 @@ public class TouchInputHandler {
 
     private boolean keyIntercepting = false;
     private boolean ignoreGamepadEvents = false;
+    private boolean threeFingerKeyboardTriggered = false;
 
     /**
      * Used for tracking swipe gestures. Only the Y-direction is needed for responding to swipe-up
@@ -326,6 +327,17 @@ public class TouchInputHandler {
             // Dex touchpad (in non-captured mode) sends events as finger, but it should be considered as a mouse.
             if (isDexEvent(event) && mDexListener.onTouch(view, event))
                 return true;
+
+            // Android cannot know when an X11 text field receives focus.  A three-finger tap is
+            // therefore a reliable, desktop-wide shortcut for opening the Android IME.
+            if (event.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN
+                    && event.getPointerCount() == 3 && !threeFingerKeyboardTriggered) {
+                threeFingerKeyboardTriggered = true;
+                MainActivity.toggleKeyboardVisibility(mActivity);
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                threeFingerKeyboardTriggered = false;
+            }
 
             // Give the underlying input strategy a chance to observe the current motion event before
             // passing it to the gesture detectors.  This allows the input strategy to react to the
