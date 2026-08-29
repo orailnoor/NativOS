@@ -63,6 +63,15 @@ class ChrootManager(private val context: Context) {
         // enter the chroot root. Android's private parent directory remains 0700.
         rootShell.exec("chmod 755 ${rootfsDir.absolutePath}")
 
+        // Bubblewrap's privileged fallback needs the sandbox root to be a mount
+        // point. Do this before the nested mounts so /dev, /proc, and /sys stay
+        // visible inside that mount rather than being hidden by it.
+        val existingMounts = rootShell.exec("mount").lines()
+        if (existingMounts.none { it.contains(" on ${rootfsDir.absolutePath} ") }) {
+            rootShell.exec("mount --bind ${rootfsDir.absolutePath} ${rootfsDir.absolutePath}")
+            Log.i(TAG, "Made chroot root a bind mount")
+        }
+
         val mounts = rootShell.exec("mount").lines()
         fun isMounted(path: String): Boolean {
             val absolute = File(rootfsDir, path).absolutePath
@@ -88,6 +97,13 @@ class ChrootManager(private val context: Context) {
         mountIfNeeded("/sys", "--bind /sys") { isMounted("sys") }
         mountIfNeeded("/run", "-t tmpfs tmpfs") { isMounted("run") }
         mountIfNeeded("/tmp", "-t tmpfs tmpfs") { isMounted("tmp") }
+
+        // Android's app-data filesystem is nosuid. Change the flag only on the
+        // isolated rootfs bind (not its parent mount), addressing it as / from
+        // inside the chroot so mount resolves the correct bind mount.
+        if (execChroot("mount -o remount,bind,suid,dev /") != 0) {
+            Log.w(TAG, "Could not enable privileged helpers on chroot bind mount")
+        }
 
         // Fix missing symlinks in Android's /dev
         val devPath = File(rootfsDir, "dev").absolutePath
@@ -221,7 +237,10 @@ class ChrootManager(private val context: Context) {
             source.writeText(
                 """
                 #define _GNU_SOURCE
+                #include <dirent.h>
                 #include <errno.h>
+                #include <limits.h>
+                #include <ftw.h>
                 int close_range(unsigned int first, unsigned int last, int flags) {
                     (void) first; (void) last; (void) flags;
                     errno = ENOSYS;
@@ -236,6 +255,398 @@ class ChrootManager(private val context: Context) {
             if (result != 0) Log.w(TAG, "Could not build close_range compatibility shim")
         } catch (error: Throwable) {
             Log.w(TAG, "Could not prepare close_range compatibility shim", error)
+        }
+    }
+
+    /**
+     * Use Bubblewrap's privileged fallback on Android kernels that disable
+     * unprivileged user namespaces. Android mounts app data with nosuid, so a
+     * small setuid launcher prepares the mount sandbox, then drops the actual
+     * application and D-Bus proxy to a locked UID. The original distro binary
+     * remains preserved.
+     */
+    private fun prepareFlatpakCompatibility() {
+        val distroBwrap = File(rootfsDir, "usr/bin/bwrap")
+        val installedWrapper = File(rootfsDir, "usr/local/bin/bwrap")
+        if (!distroBwrap.exists() && !installedWrapper.exists()) return
+
+        try {
+            val source = File(baseDir, "compat/nativos_bwrap.c")
+            source.parentFile?.mkdirs()
+            source.writeText(
+                """
+                #define _GNU_SOURCE
+                #include <dirent.h>
+                #include <errno.h>
+                #include <fcntl.h>
+                #include <limits.h>
+                #include <stdio.h>
+                #include <stdlib.h>
+                #include <string.h>
+                #include <sys/mman.h>
+                #include <sys/stat.h>
+                #include <sys/types.h>
+                #include <unistd.h>
+
+                static int unsupported_namespace(const char *value) {
+                    return strcmp(value, "--unshare-pid") == 0 ||
+                           strcmp(value, "--unshare-ipc") == 0;
+                }
+
+                static int bind_option(const char *value) {
+                    return strcmp(value, "--bind") == 0 ||
+                           strcmp(value, "--ro-bind") == 0 ||
+                           strcmp(value, "--dev-bind") == 0 ||
+                           strcmp(value, "--bind-try") == 0 ||
+                           strcmp(value, "--ro-bind-try") == 0 ||
+                           strcmp(value, "--dev-bind-try") == 0;
+                }
+
+                static int unavailable_runtime_bind(const char *source) {
+                    return strncmp(source, "/tmp/runtime-root/doc/", 22) == 0 ||
+                           strncmp(source, "/tmp/runtime-root/.flatpak-helper/", 34) == 0;
+                }
+
+                static void make_runtime_parents_traversable(const char *source) {
+                    const char *prefix = "/tmp/runtime-root/";
+                    if (strncmp(source, prefix, 18) != 0) return;
+                    char *path = strdup(source);
+                    if (path == NULL) return;
+                    for (char *cursor = path + 18; (cursor = strchr(cursor, '/')) != NULL; cursor++) {
+                        *cursor = '\0';
+                        chmod(path, 0711);
+                        *cursor = '/';
+                    }
+                    free(path);
+                }
+
+                static void make_root_parents_traversable(const char *source) {
+                    if (strncmp(source, "/root/", 6) != 0) return;
+                    char *path = strdup(source);
+                    if (path == NULL) return;
+                    for (char *cursor = path + 6; (cursor = strchr(cursor, '/')) != NULL; cursor++) {
+                        *cursor = '\0';
+                        chmod(path, 0755);
+                        *cursor = '/';
+                    }
+                    free(path);
+                }
+
+                static void make_runtime_tree_traversable(const char *path, int depth) {
+                    if (depth > 12) return;
+                    chmod(path, 0711);
+                    DIR *directory = opendir(path);
+                    if (directory == NULL) return;
+                    struct dirent *entry;
+                    while ((entry = readdir(directory)) != NULL) {
+                        if (strcmp(entry->d_name, ".") == 0 ||
+                            strcmp(entry->d_name, "..") == 0) continue;
+                        char child[PATH_MAX];
+                        if (snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >=
+                            (int) sizeof(child)) continue;
+                        struct stat info;
+                        if (lstat(child, &info) == 0 && S_ISDIR(info.st_mode)) {
+                            make_runtime_tree_traversable(child, depth + 1);
+                        }
+                    }
+                    closedir(directory);
+                }
+
+                static void make_app_tree_writable(const char *path, int depth,
+                                                   uid_t sandbox_uid) {
+                    if (depth > 24) return;
+                    struct stat info;
+                    if (lstat(path, &info) != 0 || S_ISLNK(info.st_mode)) return;
+                    lchown(path, sandbox_uid, 0);
+                    mode_t mode = info.st_mode | S_IRUSR | S_IWUSR;
+                    if (S_ISDIR(info.st_mode)) mode |= S_IXUSR;
+                    chmod(path, mode);
+                    if (!S_ISDIR(info.st_mode)) return;
+                    DIR *directory = opendir(path);
+                    if (directory == NULL) return;
+                    struct dirent *entry;
+                    while ((entry = readdir(directory)) != NULL) {
+                        if (strcmp(entry->d_name, ".") == 0 ||
+                            strcmp(entry->d_name, "..") == 0) continue;
+                        char child[PATH_MAX];
+                        if (snprintf(child, sizeof(child), "%s/%s", path, entry->d_name) >=
+                            (int) sizeof(child)) continue;
+                        make_app_tree_writable(child, depth + 1, sandbox_uid);
+                    }
+                    closedir(directory);
+                }
+
+                static void prepare_writable_bind(const char *source,
+                                                  const char *destination,
+                                                  uid_t sandbox_uid) {
+                    if (strcmp(destination, "/app/extra") == 0 ||
+                        strcmp(destination, "/run/ld-so-cache-dir") == 0 ||
+                        strncmp(source, "/root/.var/app/", 15) == 0 ||
+                        strncmp(source, "/root/.config/", 14) == 0 ||
+                        strncmp(source, "/tmp/runtime-root/", 18) == 0) {
+                        int ownership_result = chown(source, sandbox_uid, 0);
+                        (void) ownership_result;
+                        struct stat info;
+                        chmod(source,
+                              lstat(source, &info) == 0 && S_ISDIR(info.st_mode) ? 0775 : 0664);
+                    }
+                    if (strncmp(source, "/root/.var/app/", 15) == 0) {
+                        make_app_tree_writable(source, 0, sandbox_uid);
+                    }
+                    make_runtime_parents_traversable(source);
+                    make_root_parents_traversable(source);
+                }
+
+                static int filtered_args_fd(int source_fd, uid_t sandbox_uid) {
+                    off_t size = lseek(source_fd, 0, SEEK_END);
+                    if (size < 0 || lseek(source_fd, 0, SEEK_SET) < 0) return -1;
+
+                    char *buffer = malloc((size_t) size);
+                    if (buffer == NULL) return -1;
+                    size_t received = 0;
+                    while (received < (size_t) size) {
+                        ssize_t count = read(source_fd, buffer + received, (size_t) size - received);
+                        if (count <= 0) {
+                            free(buffer);
+                            return -1;
+                        }
+                        received += (size_t) count;
+                    }
+                    int target_fd = memfd_create("nativos-bwrap-args", 0);
+                    if (target_fd < 0) {
+                        free(buffer);
+                        return -1;
+                    }
+                    size_t offset = 0;
+                    while (offset < received) {
+                        size_t remaining = received - offset;
+                        size_t length = strnlen(buffer + offset, remaining);
+                        if (length == remaining) break;
+                        if (bind_option(buffer + offset)) {
+                            size_t source_offset = offset + length + 1;
+                            if (source_offset < received) {
+                                size_t source_length = strnlen(
+                                    buffer + source_offset, received - source_offset);
+                                size_t destination_offset = source_offset + source_length + 1;
+                                if (source_length < received - source_offset &&
+                                    destination_offset < received) {
+                                    size_t destination_length = strnlen(
+                                        buffer + destination_offset, received - destination_offset);
+                                    if (destination_length < received - destination_offset) {
+                                        if (unavailable_runtime_bind(buffer + source_offset) ||
+                                            strcmp(buffer + destination_offset,
+                                                   "/run/host/monitor") == 0) {
+                                            offset = destination_offset + destination_length + 1;
+                                            continue;
+                                        }
+                                        prepare_writable_bind(
+                                            buffer + source_offset,
+                                            buffer + destination_offset,
+                                            sandbox_uid);
+                                    }
+                                }
+                            }
+                        }
+                        if (strcmp(buffer + offset, "0600") == 0 &&
+                            offset + length + 1 < received) {
+                            size_t action_offset = offset + length + 1;
+                            size_t action_length = strnlen(
+                                buffer + action_offset, received - action_offset);
+                            size_t fd_offset = action_offset + action_length + 1;
+                            if ((strcmp(buffer + action_offset, "--file") == 0 ||
+                                 strcmp(buffer + action_offset, "--ro-bind-data") == 0) &&
+                                action_length < received - action_offset &&
+                                fd_offset < received) {
+                                size_t fd_length = strnlen(
+                                    buffer + fd_offset, received - fd_offset);
+                                size_t destination_offset = fd_offset + fd_length + 1;
+                                if (fd_length < received - fd_offset &&
+                                    destination_offset < received) {
+                                    size_t destination_length = strnlen(
+                                        buffer + destination_offset,
+                                        received - destination_offset);
+                                    if (destination_length < received - destination_offset &&
+                                        strcmp(buffer + destination_offset,
+                                               "/.flatpak-info") == 0) {
+                                        static const char readable[] = "0644";
+                                        if (write(target_fd, readable, sizeof(readable)) !=
+                                            (ssize_t) sizeof(readable)) {
+                                            close(target_fd);
+                                            free(buffer);
+                                            return -1;
+                                        }
+                                        offset += length + 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        if (strcmp(buffer + offset, "--ro-bind-data") == 0 &&
+                            offset + length + 1 < received) {
+                            size_t fd_offset = offset + length + 1;
+                            size_t fd_length = strnlen(
+                                buffer + fd_offset, received - fd_offset);
+                            size_t destination_offset = fd_offset + fd_length + 1;
+                            if (fd_length < received - fd_offset &&
+                                destination_offset < received) {
+                                size_t destination_length = strnlen(
+                                    buffer + destination_offset,
+                                    received - destination_offset);
+                                if (destination_length < received - destination_offset &&
+                                    strcmp(buffer + destination_offset,
+                                           "/.flatpak-info") == 0) {
+                                    static const char permissions[] = "--perms";
+                                    static const char readable[] = "0644";
+                                    if (write(target_fd, permissions, sizeof(permissions)) !=
+                                            (ssize_t) sizeof(permissions) ||
+                                        write(target_fd, readable, sizeof(readable)) !=
+                                            (ssize_t) sizeof(readable)) {
+                                        close(target_fd);
+                                        free(buffer);
+                                        return -1;
+                                    }
+                                }
+                            }
+                        }
+                        if (!unsupported_namespace(buffer + offset) &&
+                            write(target_fd, buffer + offset, length + 1) != (ssize_t) (length + 1)) {
+                            close(target_fd);
+                            free(buffer);
+                            return -1;
+                        }
+                        offset += length + 1;
+                    }
+                    free(buffer);
+                    if (lseek(target_fd, 0, SEEK_SET) < 0) {
+                        close(target_fd);
+                        return -1;
+                    }
+                    return target_fd;
+                }
+
+                int main(int argc, char **argv) {
+                    const char *program_name = strrchr(argv[0], '/');
+                    program_name = program_name == NULL ? argv[0] : program_name + 1;
+                    if (strcmp(program_name, "nativos-flatpak-drop") == 0) {
+                        chmod("/", 0755);
+                        chmod("/etc", 0755);
+                        chmod("/usr", 0755);
+                        chmod("/dev/shm", 01777);
+                        chmod("/run", 0755);
+                        chmod("/run/dbus", 0755);
+                        chmod("/run/flatpak", 0755);
+                        chmod("/run/user", 0755);
+                        chmod("/run/user/0", 0700);
+                        chmod("/.flatpak-info", 0644);
+                        if (argc < 2 || setgid(1000) != 0 || setuid(1000) != 0) {
+                            perror("nativos-flatpak-drop");
+                            return 1;
+                        }
+                        execvp(argv[1], argv + 1);
+                        perror("nativos-flatpak-drop: execvp");
+                        return errno == ENOENT ? 127 : 126;
+                    }
+
+                    uid_t sandbox_uid = getuid() == 0 ? 1000 : getuid();
+                    if (geteuid() == 0) {
+                        // The desktop currently stores its per-user Flatpaks
+                        // below /root. Let the sandbox UID traverse the runtime,
+                        // and own the one writable apply-extra destination.
+                        chmod("/root", 0755);
+                        chmod("/root/.local/share/flatpak", 0755);
+                        make_runtime_tree_traversable("/tmp/runtime-root", 0);
+                        for (int input = 1; input + 2 < argc; input++) {
+                            if (bind_option(argv[input])) {
+                                prepare_writable_bind(
+                                    argv[input + 1], argv[input + 2], sandbox_uid);
+                            }
+                        }
+                    }
+                    // Several Android kernels disable PID and IPC namespaces.
+                    // Flatpak remains isolated by Bubblewrap's mount namespace;
+                    // omit only the flags the kernel explicitly cannot create.
+                    char **filtered = calloc((size_t) argc + 32, sizeof(char *));
+                    if (filtered == NULL) {
+                        perror("nativos-bwrap: calloc");
+                        return 1;
+                    }
+                    int output = 0;
+                    for (int input = 0; input < argc; input++) {
+                        if (bind_option(argv[input]) && input + 2 < argc &&
+                            unavailable_runtime_bind(argv[input + 1])) {
+                            input += 2;
+                            continue;
+                        }
+                        if (unsupported_namespace(argv[input])) {
+                            continue;
+                        }
+                        if (geteuid() == 0 && strcmp(argv[input], "--") == 0) {
+                            // Android cannot create the user namespace required
+                            // by bwrap's --uid option. Bind this launcher into the
+                            // completed mount sandbox and drop IDs immediately
+                            // before the application process is executed instead.
+                            filtered[output++] = "--ro-bind";
+                            filtered[output++] = "/usr/local/bin/bwrap";
+                            filtered[output++] = "/run/nativos-flatpak-drop";
+                            filtered[output++] = "--dir";
+                            filtered[output++] = "/run/nativos";
+                            filtered[output++] = "--ro-bind-try";
+                            filtered[output++] = "/usr/local/lib/libsocket_hook.so";
+                            filtered[output++] = "/run/nativos/libsocket_hook.so";
+                            filtered[output++] = "--ro-bind-try";
+                            filtered[output++] = "/usr/local/lib/libnativos-close-range.so";
+                            filtered[output++] = "/run/nativos/libnativos-close-range.so";
+                            filtered[output++] = "--setenv";
+                            filtered[output++] = "LD_PRELOAD";
+                            filtered[output++] = "/run/nativos/libsocket_hook.so:/run/nativos/libnativos-close-range.so";
+                            filtered[output++] = "--setenv";
+                            filtered[output++] = "ZYPAK_LD_PRELOAD";
+                            filtered[output++] = "/run/nativos/libsocket_hook.so:/run/nativos/libnativos-close-range.so";
+                            filtered[output++] = "--setenv";
+                            filtered[output++] = "TMPDIR";
+                            filtered[output++] = "${tmpDir.absolutePath}";
+                        }
+                        if (strcmp(argv[input], "--args") == 0 && input + 1 < argc) {
+                            int source_fd = atoi(argv[input + 1]);
+                            int target_fd = filtered_args_fd(source_fd, sandbox_uid);
+                            if (target_fd < 0) {
+                                perror("nativos-bwrap: filter args");
+                                return 1;
+                            }
+                            char *fd_value = malloc(24);
+                            if (fd_value == NULL) return 1;
+                            snprintf(fd_value, 24, "%d", target_fd);
+                            filtered[output++] = argv[input];
+                            filtered[output++] = fd_value;
+                            input++;
+                            continue;
+                        }
+                        filtered[output++] = argv[input];
+                        if (geteuid() == 0 && strcmp(argv[input], "--") == 0) {
+                            filtered[output++] = "/run/nativos-flatpak-drop";
+                        }
+                    }
+                    filtered[output] = NULL;
+
+                    execv("/usr/bin/bwrap", filtered);
+                    perror("nativos-bwrap: execv");
+                    return errno == ENOENT ? 127 : 126;
+                }
+                """.trimIndent()
+            )
+            val result = execChroot(
+                "mkdir -p /usr/local/bin && " +
+                    "gcc -O2 -o /usr/local/bin/bwrap ${source.absolutePath} && " +
+                    "chown root:root /usr/local/bin/bwrap && chmod 4755 /usr/local/bin/bwrap && " +
+                    "/usr/local/bin/bwrap --ro-bind / / --proc /proc --dev /dev /bin/true"
+            )
+            if (result == 0) {
+                Log.i(TAG, "Flatpak Bubblewrap compatibility ready")
+            } else {
+                Log.w(TAG, "Could not prepare Flatpak Bubblewrap compatibility (exit $result)")
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "Could not prepare Flatpak Bubblewrap compatibility", error)
         }
     }
 
@@ -265,6 +676,7 @@ class ChrootManager(private val context: Context) {
         ensureMounts()
         bindX11Socket()
         prepareCloseRangeCompatibility()
+        prepareFlatpakCompatibility()
 
         val hardwareGpu = prepareHardwareGpu()
         val gpuEnvironment = if (hardwareGpu) {
@@ -327,6 +739,50 @@ class ChrootManager(private val context: Context) {
             export GSK_RENDERER=cairo
             export WLR_NO_HARDWARE_CURSORS=1
             $gpuEnvironment
+
+            # The desktop runs as root to manage this private chroot, while
+            # Flatpak applications are dropped to UID 1000. Permit that UID to
+            # authenticate to the session bus; per-app xdg-dbus-proxy policies
+            # still filter every Flatpak connection.
+            if ! getent passwd 1000 >/dev/null 2>&1; then
+                useradd --uid 1000 --no-create-home --home-dir /root \
+                    --shell /usr/sbin/nologin nativos-app
+            fi
+            mkdir -p /etc/opt/chrome/policies/managed \
+                /etc/opt/chrome/policies/recommended \
+                /etc/opt/chrome/policies/enrollment
+            dbus-uuidgen --ensure=/etc/machine-id
+
+            configure_cobalt_wayland() {
+                app_id="${'$'}1"
+                flags_name="${'$'}2"
+                [ -d "/root/.local/share/flatpak/app/${'$'}app_id" ] || return 0
+                flags_dir="/root/.var/app/${'$'}app_id/config"
+                flags_file="${'$'}flags_dir/${'$'}flags_name-flags.conf"
+                mkdir -p "${'$'}flags_dir"
+                touch "${'$'}flags_file"
+                grep -qxF -- '--ozone-platform=wayland' "${'$'}flags_file" || \
+                    printf '%s\n' '--ozone-platform=wayland' >> "${'$'}flags_file"
+            }
+            (
+                while true; do
+                    configure_cobalt_wayland com.google.Chrome chrome
+                    configure_cobalt_wayland com.microsoft.Edge edge
+                    configure_cobalt_wayland com.brave.Browser brave
+                    configure_cobalt_wayland com.vivaldi.Vivaldi vivaldi
+                    configure_cobalt_wayland com.opera.Opera opera
+                    sleep 5
+                done
+            ) &
+
+            mkdir -p /etc/dbus-1
+            cat > /etc/dbus-1/session-local.conf << 'DBUSEOF'
+<busconfig>
+  <policy context="default">
+    <allow user="1000"/>
+  </policy>
+</busconfig>
+DBUSEOF
 
             # Ensure runtime dir exists with correct permissions
             mkdir -p /tmp/runtime-root
@@ -440,7 +896,12 @@ PHOCEOF
 #!/bin/bash
 echo $$ > /tmp/phosh_loop.pid
 while true; do
-    dbus-run-session -- phoc -C /etc/nativOS/phoc.ini -E "bash -c 'export LD_PRELOAD=${'$'}NATIVOS_APP_LD_PRELOAD; exec /usr/libexec/phosh -U'"
+    dbus-run-session -- phoc -C /etc/nativOS/phoc.ini -E "bash -c '
+        export LD_PRELOAD=${'$'}NATIVOS_APP_LD_PRELOAD
+        [ -x /usr/libexec/xdg-desktop-portal-gtk ] && /usr/libexec/xdg-desktop-portal-gtk >/tmp/xdg-desktop-portal-gtk.log 2>&1 &
+        [ -x /usr/libexec/xdg-desktop-portal ] && /usr/libexec/xdg-desktop-portal >/tmp/xdg-desktop-portal.log 2>&1 &
+        exec /usr/libexec/phosh -U
+    '"
     echo "NativOS: Phoc exited, restarting in 2 seconds..."
     sleep 2
 done
@@ -573,9 +1034,10 @@ PHOSHEOF
             File(rootfsDir, "proc").absolutePath,
             File(rootfsDir, "sys").absolutePath,
             File(rootfsDir, "run").absolutePath,
-            File(rootfsDir, "tmp").absolutePath
+            File(rootfsDir, "tmp").absolutePath,
+            rootfsDir.absolutePath
         )
-        targets.reversed().forEach { target ->
+        targets.forEach { target ->
             if (mounts.any { it.contains(" on $target ") }) {
                 try {
                     rootShell.exec("umount -l $target 2>/dev/null || umount $target 2>/dev/null || true")
