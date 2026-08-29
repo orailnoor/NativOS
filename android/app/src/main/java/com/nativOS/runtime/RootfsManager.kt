@@ -47,6 +47,41 @@ class RootfsManager(private val context: Context) {
 
     fun isFlatpakInstalled(): Boolean = File(rootfsDir, "usr/bin/flatpak").exists()
 
+    /** Install the adaptive Wayland terminal and remove the two legacy XTerm launchers. */
+    fun ensureProfessionalTerminal(chrootManager: ChrootManager): Boolean {
+        val console = File(rootfsDir, "usr/bin/kgx")
+        val legacyXterm = File(rootfsDir, "usr/bin/xterm")
+        val legacyGnomeTerminal = File(rootfsDir, "usr/bin/gnome-terminal")
+        if (console.exists() && !legacyXterm.exists() && !legacyGnomeTerminal.exists()) return true
+
+        val result = chrootManager.execChroot(
+            """
+                # A previously interrupted optional package must not prevent the
+                # terminal migration from repairing the installation.
+                dpkg --configure -a || true
+                if ! command -v kgx >/dev/null 2>&1; then
+                    apt-get update || exit 1
+                    TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC \
+                        apt-get install -y --no-install-recommends gnome-console || exit 1
+                fi
+                # XTerm and UXTerm are supplied by the same package. Keep the proven
+                # adaptive Console installed before removing either legacy terminal.
+                rm -f /usr/share/applications/debian-xterm.desktop \
+                    /usr/share/applications/debian-uxterm.desktop \
+                    /usr/share/applications/org.gnome.Terminal.desktop
+                TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive \
+                    apt-get purge -y xterm gnome-terminal gnome-terminal-data || exit 1
+                update-desktop-database /usr/share/applications 2>/dev/null || true
+            """.trimIndent()
+        )
+        if (result == 0) {
+            Log.i(TAG, "GNOME Console ready; legacy terminal launchers removed")
+        } else {
+            Log.w(TAG, "Could not provision GNOME Console (exit $result)")
+        }
+        return result == 0
+    }
+
     /** Add or repair the signed per-user Flathub remote used by GNOME Software. */
     fun ensureFlathub(chrootManager: ChrootManager): Boolean {
         if (!isFlatpakInstalled()) return false
@@ -218,10 +253,10 @@ class RootfsManager(private val context: Context) {
             chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends phoc phosh")
 
             onProgress(0.40, "Installing GUI Dependencies...")
-            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends squeekboard phosh-mobile-settings gnome-settings-daemon gnome-settings-daemon-common librsvg2-common gnome-terminal adwaita-icon-theme fonts-cantarell")
+            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends squeekboard phosh-mobile-settings gnome-settings-daemon gnome-settings-daemon-common librsvg2-common gnome-console adwaita-icon-theme fonts-cantarell")
 
             onProgress(0.55, "Installing compilation tools...")
-            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends gcc libxcb1-dev libxcb-dri3-dev libc6-dev libvulkan1 vulkan-tools xterm wget curl")
+            chrootManager.execChroot("TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends gcc libxcb1-dev libxcb-dri3-dev libc6-dev libvulkan1 vulkan-tools wget curl")
 
             onProgress(0.70, "Building universal hooks (Socket)...")
             chrootManager.execChroot("""

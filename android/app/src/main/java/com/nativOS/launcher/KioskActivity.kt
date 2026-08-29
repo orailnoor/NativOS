@@ -360,16 +360,21 @@ class KioskActivity : Activity() {
                     }
                 }
                 if (bootFailed) {
-                    // Even if Phosh failed, try to install dbus so we can at least start xterm
+                    // Even if Phosh failed, leave the rootfs package database usable.
                     updateOverlay(0.90, "Installing minimal session...", "Phosh failed, trying fallback")
                     try {
                         chrootManager.execChroot(
-                            "TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dbus dbus-x11 xterm")
+                            "TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dbus dbus-x11")
                     } catch (_: Exception) {}
                 }
             } else {
                 updateOverlay(0.95, "Phosh desktop found", "")
             }
+
+            // Migrate existing installs away from the tiny unmanaged XTerm/UXTerm
+            // windows. GNOME Console is adaptive and is maximized by Phosh.
+            updateOverlay(0.95, "Checking terminal...", "GNOME Console")
+            rootfsManager.ensureProfessionalTerminal(chrootManager)
 
             // Migrate existing installations that have Flatpak but were created
             // before Flathub setup became independent from Firefox provisioning.

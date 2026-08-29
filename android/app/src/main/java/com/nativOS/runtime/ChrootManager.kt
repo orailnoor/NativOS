@@ -908,9 +908,9 @@ done
 PHOSHEOF
                 chmod +x /tmp/start_phosh.sh
                 exec /tmp/start_phosh.sh
-            elif command -v xterm >/dev/null 2>&1; then
-                echo "NativOS: Fallback — launching xterm"
-                exec xterm
+            elif command -v kgx >/dev/null 2>&1; then
+                echo "NativOS: Fallback — launching GNOME Console"
+                exec kgx
             else
                 echo "NativOS: ERROR — no compositor or terminal found"
                 sleep 999
