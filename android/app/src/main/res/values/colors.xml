@@ -2,4 +2,14 @@
 <resources>
     <color name="ic_launcher_background">#1A1A2E</color>
     <color name="ic_launcher_foreground">#6C63FF</color>
+    <color name="nativos_background">#090B12</color>
+    <color name="nativos_surface">#141824</color>
+    <color name="nativos_surface_high">#1C2231</color>
+    <color name="nativos_primary">#756BFF</color>
+    <color name="nativos_primary_soft">#292450</color>
+    <color name="nativos_text">#F7F7FC</color>
+    <color name="nativos_text_muted">#A7AEC0</color>
+    <color name="nativos_success">#42D3A2</color>
+    <color name="nativos_warning">#FFBE55</color>
+    <color name="nativos_danger">#FF6B7A</color>
 </resources>

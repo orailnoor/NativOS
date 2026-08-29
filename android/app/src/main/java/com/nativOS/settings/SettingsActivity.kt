@@ -2,17 +2,13 @@ package com.nativOS.settings
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
-import android.view.ViewGroup
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
+import com.google.android.material.switchmaterial.SwitchMaterial
 import com.nativOS.launcher.KioskActivity
 
 class SettingsActivity : Activity() {
@@ -22,144 +18,141 @@ class SettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "NativOS Settings"
+        window.statusBarColor = PremiumUi.background
+        window.navigationBarColor = PremiumUi.background
 
-        val density = resources.displayMetrics.density
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((24 * density).toInt(), (28 * density).toInt(),
-                (24 * density).toInt(), (32 * density).toInt())
+            setPadding(PremiumUi.dp(this@SettingsActivity, 20), PremiumUi.dp(this@SettingsActivity, 24),
+                PremiumUi.dp(this@SettingsActivity, 20), PremiumUi.dp(this@SettingsActivity, 40))
         }
 
-        content.addView(TextView(this).apply {
-            text = "NativOS Settings"
-            textSize = 28f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-        })
-        content.addView(TextView(this).apply {
-            text = "Android integration controls. More settings will be added here."
-            textSize = 15f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, (8 * density).toInt(), 0, (26 * density).toInt())
-        })
+        content.addView(PremiumUi.badge(this, "NativOS control center", PremiumUi.primary))
+        content.addView(PremiumUi.verticalSpace(this, 18))
+        content.addView(PremiumUi.text(this, "Your phone,\nyour stack.", 36f, bold = true))
+        content.addView(PremiumUi.verticalSpace(this, 10))
+        content.addView(PremiumUi.text(this,
+            "Choose how Linux integrates with Android. Every system-level change remains explicit and reversible.",
+            16f, PremiumUi.muted))
+        content.addView(PremiumUi.verticalSpace(this, 24))
 
-        content.addView(TextView(this).apply {
-            text = "Operating mode"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-        })
-        modeStatus = TextView(this).apply {
-            textSize = 16f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, (6 * density).toInt(), 0, (8 * density).toInt())
-        }
-        content.addView(modeStatus)
-        content.addView(Button(this).apply {
-            text = "Use as an optional Linux app"
-            setOnClickListener {
-                NativOSPreferences.setOperatingMode(
-                    this@SettingsActivity,
-                    NativOSPreferences.OperatingMode.DESKTOP_APP
-                )
-                if (HomeRoleManager.isDefaultHome(this@SettingsActivity)) {
-                    startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
-                }
-                updateState()
-            }
-        }, matchWidth())
-        content.addView(Button(this).apply {
-            text = "Use as the Home launcher"
-            setOnClickListener {
-                NativOSPreferences.setOperatingMode(
-                    this@SettingsActivity,
-                    NativOSPreferences.OperatingMode.HOME_LAUNCHER
-                )
-                HomeRoleManager.requestDefaultHome(this@SettingsActivity)
-            }
-        }, matchWidth())
-        content.addView(Button(this).apply {
-            text = "De-Googled Android mode — not enabled yet"
-            isEnabled = false
-        }, matchWidth())
-        content.addView(TextView(this).apply {
-            text = "This mode will remove Google Play Services and Google apps while retaining Android's hardware and vendor layer. It will be a separate, reversible opt-in feature."
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, (8 * density).toInt(), 0, (24 * density).toInt())
-        })
-        deGoogleStatus = TextView(this).apply {
-            text = "Google component scan has not been run. No packages have been changed."
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 0, 0, (8 * density).toInt())
-        }
-        content.addView(deGoogleStatus)
-        content.addView(Button(this).apply {
-            text = "Scan Google components (read-only)"
-            setOnClickListener {
-                isEnabled = false
-                deGoogleStatus.text = "Scanning installed packages…"
-                Thread({
-                    val result = runCatching { DeGoogleManager(this@SettingsActivity).scan() }
-                    runOnUiThread {
-                        isEnabled = true
-                        deGoogleStatus.text = result.fold(
-                            onSuccess = {
-                                "Found ${it.coreServices.size} Google core components and " +
-                                    "${it.googleApps.size} additional Google packages. Nothing was changed."
-                            },
-                            onFailure = { "Scan failed: ${it.message}" }
-                        )
+        content.addView(PremiumUi.card(this, PremiumUi.primary).apply {
+            addView(PremiumUi.cardContent(this@SettingsActivity).apply {
+                addView(PremiumUi.badge(this@SettingsActivity, "Live configuration", PremiumUi.success))
+                addView(PremiumUi.verticalSpace(this@SettingsActivity, 14))
+                modeStatus = PremiumUi.text(this@SettingsActivity, "", 21f, bold = true)
+                launcherStatus = PremiumUi.text(this@SettingsActivity, "", 14f, PremiumUi.muted)
+                addView(modeStatus)
+                addView(PremiumUi.verticalSpace(this@SettingsActivity, 6))
+                addView(launcherStatus)
+            })
+        }, PremiumUi.matchWidth())
+        content.addView(PremiumUi.verticalSpace(this, 26))
+
+        content.addView(sectionTitle("Operating mode", "Decide when NativOS takes over the screen."))
+        content.addView(PremiumUi.verticalSpace(this, 12))
+        content.addView(PremiumUi.card(this).apply {
+            addView(PremiumUi.cardContent(this@SettingsActivity).apply {
+                addView(PremiumUi.button(this@SettingsActivity, "Linux desktop app").apply {
+                    setOnClickListener {
+                        NativOSPreferences.setOperatingMode(this@SettingsActivity, NativOSPreferences.OperatingMode.DESKTOP_APP)
+                        if (HomeRoleManager.isDefaultHome(this@SettingsActivity))
+                            startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+                        updateState()
                     }
-                }, "nativOS-degoogle-scan").start()
-            }
-        }, matchWidth())
-        content.addView(Button(this).apply {
-            text = "Open System App Remover"
-            setOnClickListener {
-                startActivity(Intent(this@SettingsActivity, SystemAppRemoverActivity::class.java))
-            }
-        }, matchWidth())
+                }, PremiumUi.matchWidth())
+                addView(PremiumUi.button(this@SettingsActivity, "Make NativOS the Home launcher", true).apply {
+                    setOnClickListener {
+                        NativOSPreferences.setOperatingMode(this@SettingsActivity, NativOSPreferences.OperatingMode.HOME_LAUNCHER)
+                        HomeRoleManager.requestDefaultHome(this@SettingsActivity)
+                    }
+                }, PremiumUi.matchWidth(PremiumUi.dp(this@SettingsActivity, 10)))
+                addView(PremiumUi.button(this@SettingsActivity, "De-Googled mode · in development").apply {
+                    isEnabled = false
+                    alpha = 0.55f
+                }, PremiumUi.matchWidth(PremiumUi.dp(this@SettingsActivity, 10)))
+            })
+        }, PremiumUi.matchWidth())
+        content.addView(PremiumUi.verticalSpace(this, 26))
 
-        launcherStatus = TextView(this).apply {
-            textSize = 17f
-            setTextColor(Color.WHITE)
-        }
-        content.addView(launcherStatus)
-        content.addView(Button(this).apply {
-            text = "Set NativOS as Home launcher"
-            setOnClickListener { HomeRoleManager.requestDefaultHome(this@SettingsActivity) }
-        }, matchWidth())
+        content.addView(sectionTitle("Privacy & system apps", "See what is installed before changing anything."))
+        content.addView(PremiumUi.verticalSpace(this, 12))
+        content.addView(PremiumUi.card(this, PremiumUi.success).apply {
+            addView(PremiumUi.cardContent(this@SettingsActivity).apply {
+                addView(PremiumUi.badge(this@SettingsActivity, "Reversible by design", PremiumUi.success))
+                addView(PremiumUi.verticalSpace(this@SettingsActivity, 14))
+                addView(PremiumUi.text(this@SettingsActivity, "De-Google without guessing", 21f, bold = true))
+                addView(PremiumUi.verticalSpace(this@SettingsActivity, 7))
+                addView(PremiumUi.text(this@SettingsActivity,
+                    "Review Google apps, core services, and phone-critical replacements. NativOS records every package it disables.",
+                    14f, PremiumUi.muted))
+                deGoogleStatus = PremiumUi.text(this@SettingsActivity, "No scan yet · nothing changed", 13f, PremiumUi.muted, true)
+                deGoogleStatus.setPadding(0, PremiumUi.dp(this@SettingsActivity, 16), 0, 0)
+                addView(deGoogleStatus)
+                addView(PremiumUi.button(this@SettingsActivity, "Scan Google components").apply {
+                    setOnClickListener {
+                        isEnabled = false
+                        deGoogleStatus.text = "Scanning the complete package set…"
+                        Thread({
+                            val result = runCatching { DeGoogleManager(this@SettingsActivity).scan() }
+                            runOnUiThread {
+                                isEnabled = true
+                                deGoogleStatus.text = result.fold(
+                                    onSuccess = { "${it.coreServices.size} core services · ${it.googleApps.size} Google packages · no changes" },
+                                    onFailure = { "Scan failed · ${it.message}" })
+                            }
+                        }, "nativOS-degoogle-scan").start()
+                    }
+                }, PremiumUi.matchWidth(PremiumUi.dp(this@SettingsActivity, 16)))
+                addView(PremiumUi.button(this@SettingsActivity, "Open System App Remover", true).apply {
+                    setOnClickListener { startActivity(Intent(this@SettingsActivity, SystemAppRemoverActivity::class.java)) }
+                }, PremiumUi.matchWidth(PremiumUi.dp(this@SettingsActivity, 10)))
+            })
+        }, PremiumUi.matchWidth())
+        content.addView(PremiumUi.verticalSpace(this, 26))
 
-        content.addView(Switch(this).apply {
-            text = "Hide Android navigation and status bars"
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            isChecked = NativOSPreferences.hideSystemBars(this@SettingsActivity)
-            setPadding(0, (20 * density).toInt(), 0, (12 * density).toInt())
-            setOnCheckedChangeListener { _, checked ->
-                NativOSPreferences.setHideSystemBars(this@SettingsActivity, checked)
-            }
-        }, matchWidth())
+        content.addView(sectionTitle("Android integration", "Control the layer underneath Linux."))
+        content.addView(PremiumUi.verticalSpace(this, 12))
+        content.addView(PremiumUi.card(this).apply {
+            addView(PremiumUi.cardContent(this@SettingsActivity).apply {
+                addView(SwitchMaterial(this@SettingsActivity).apply {
+                    text = "Immersive Linux desktop"
+                    textSize = 16f
+                    setTextColor(PremiumUi.text)
+                    isChecked = NativOSPreferences.hideSystemBars(this@SettingsActivity)
+                    setOnCheckedChangeListener { _, checked ->
+                        NativOSPreferences.setHideSystemBars(this@SettingsActivity, checked)
+                    }
+                }, PremiumUi.matchWidth())
+                addView(PremiumUi.text(this@SettingsActivity,
+                    "Hide Android navigation and status bars while NativOS is active.", 13f, PremiumUi.muted).apply {
+                    setPadding(0, PremiumUi.dp(this@SettingsActivity, 5), 0, 0)
+                })
+                addView(PremiumUi.button(this@SettingsActivity, "Choose Android Home app").apply {
+                    setOnClickListener { HomeRoleManager.requestDefaultHome(this@SettingsActivity) }
+                }, PremiumUi.matchWidth(PremiumUi.dp(this@SettingsActivity, 16)))
+                addView(PremiumUi.button(this@SettingsActivity, "Open Android system settings").apply {
+                    setOnClickListener { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                }, PremiumUi.matchWidth(PremiumUi.dp(this@SettingsActivity, 10)))
+            })
+        }, PremiumUi.matchWidth())
 
-        content.addView(Button(this).apply {
-            text = "Open Android system settings"
-            setOnClickListener { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-        }, matchWidth())
-        content.addView(Button(this).apply {
-            text = "Return to NativOS desktop"
+        content.addView(PremiumUi.button(this, "Return to NativOS desktop", true).apply {
             setOnClickListener {
                 startActivity(Intent(this@SettingsActivity, KioskActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 })
                 finish()
             }
-        }, matchWidth())
+        }, PremiumUi.matchWidth(PremiumUi.dp(this, 28)))
+        content.addView(PremiumUi.text(this, "NativOS · Linux-first, Android-compatible", 12f, PremiumUi.muted).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, PremiumUi.dp(this@SettingsActivity, 18), 0, 0)
+        })
 
         setContentView(ScrollView(this).apply {
-            setBackgroundColor(Color.rgb(18, 18, 22))
+            background = PremiumUi.pageBackground()
+            isFillViewport = true
             addView(content)
         })
     }
@@ -169,23 +162,22 @@ class SettingsActivity : Activity() {
         updateState()
     }
 
-    private fun updateState() {
-        modeStatus.text = when (NativOSPreferences.operatingMode(this)) {
-            NativOSPreferences.OperatingMode.DESKTOP_APP ->
-                "Current: optional Linux desktop app"
-            NativOSPreferences.OperatingMode.HOME_LAUNCHER ->
-                "Current: Linux-first Home launcher"
-            NativOSPreferences.OperatingMode.DEGOOGLED ->
-                "Current: De-Googled Android"
-        }
-        launcherStatus.text = if (HomeRoleManager.isDefaultHome(this))
-            "Home launcher: NativOS is active"
-        else
-            "Home launcher: Android launcher is still active"
+    private fun sectionTitle(title: String, subtitle: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(PremiumUi.text(this@SettingsActivity, title, 22f, bold = true))
+        addView(PremiumUi.text(this@SettingsActivity, subtitle, 14f, PremiumUi.muted).apply {
+            setPadding(0, PremiumUi.dp(this@SettingsActivity, 5), 0, 0)
+        })
     }
 
-    private fun matchWidth() = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    )
+    private fun updateState() {
+        modeStatus.text = when (NativOSPreferences.operatingMode(this)) {
+            NativOSPreferences.OperatingMode.DESKTOP_APP -> "Optional Linux desktop"
+            NativOSPreferences.OperatingMode.HOME_LAUNCHER -> "Linux-first Home launcher"
+            NativOSPreferences.OperatingMode.DEGOOGLED -> "De-Googled Android"
+        }
+        launcherStatus.text = if (HomeRoleManager.isDefaultHome(this))
+            "NativOS currently owns the Android Home role"
+        else "Android launcher currently owns the Home role"
+    }
 }

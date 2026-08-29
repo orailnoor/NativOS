@@ -13,4 +13,14 @@
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:windowBackground">#FFFF0000</item>
     </style>
+
+    <style name="Theme.NativOS.Settings" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/nativos_primary</item>
+        <item name="colorSecondary">@color/nativos_success</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/nativos_background</item>
+        <item name="android:navigationBarColor">@color/nativos_background</item>
+        <item name="android:windowBackground">@color/nativos_background</item>
+    </style>
 </resources>
