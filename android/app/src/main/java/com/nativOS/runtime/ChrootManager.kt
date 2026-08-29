@@ -727,7 +727,7 @@ class ChrootManager(private val context: Context) {
             export XDG_CURRENT_DESKTOP=Phosh
             export XDG_SESSION_DESKTOP=phosh
             export DESKTOP_SESSION=phosh
-            export XDG_DATA_DIRS=/usr/share:/usr/local/share
+            export XDG_DATA_DIRS=/run/nativOS/android-apps/share:/usr/share:/usr/local/share
             export XDG_CONFIG_DIRS=/etc/xdg
             export DISPLAY=:0
             export LANG=C.UTF-8

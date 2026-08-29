@@ -22,6 +22,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import com.nativOS.bridge.AndroidAppIntegration
 import com.nativOS.bridge.BridgeService
 import com.nativOS.runtime.ChrootManager
 import com.nativOS.runtime.RootfsManager
@@ -345,6 +346,7 @@ class KioskActivity : Activity() {
             updateOverlay(0.72, "Mounting Linux environment...", "")
             chrootManager.ensureMounts()
             chrootManager.bindX11Socket()
+            AndroidAppIntegration.sync(this)
 
             // Step 4: Install essential packages (dbus is required for any session)
             updateOverlay(0.74, "Checking essential packages...", "")
@@ -513,6 +515,7 @@ class KioskActivity : Activity() {
     override fun onResume() {
         super.onResume()
         enterImmersiveMode()
+        AndroidAppIntegration.sync(this)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

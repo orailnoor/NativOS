@@ -2,6 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Allow the HOME activity to mirror Android launchers into Phosh. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <!-- ═══════════════════════════════════════════════════════════════
          NativOS Permissions
          All permissions required to bridge Android APIs into the

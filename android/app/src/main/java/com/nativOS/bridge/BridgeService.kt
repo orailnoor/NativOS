@@ -9,6 +9,7 @@ import android.content.Intent
 import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.os.IBinder
+import android.system.Os
 import android.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -66,6 +67,39 @@ class BridgeService : Service() {
 
         initBridges()
         startSocketServer()
+        startAndroidAppLaunchPipe()
+    }
+
+    private fun startAndroidAppLaunchPipe() {
+        thread(name = "android-app-launch-pipe") {
+            val pipe = java.io.File(filesDir, "bridge/${AndroidAppIntegration.LAUNCH_PIPE}")
+            try {
+                pipe.parentFile?.mkdirs()
+                if (!pipe.exists()) Os.mkfifo(pipe.absolutePath, 0x1B6) // 0666
+                Os.chmod(pipe.absolutePath, 0x1B6)
+
+                while (running) {
+                    pipe.inputStream().bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            val fields = line.split('\t', limit = 2)
+                            if (fields.size != 2 ||
+                                !AndroidAppIntegration.isLaunchable(this, fields[0], fields[1])) {
+                                Log.w(TAG, "Rejected Android app launch request: $line")
+                                return@forEach
+                            }
+                            val intent = Intent().apply {
+                                component = android.content.ComponentName(fields[0], fields[1])
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(intent)
+                            Log.i(TAG, "Launched Android app ${fields[0]}/${fields[1]}")
+                        }
+                    }
+                }
+            } catch (error: Throwable) {
+                if (running) Log.e(TAG, "Android app launch pipe failed", error)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
