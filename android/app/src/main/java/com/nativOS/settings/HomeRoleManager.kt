@@ -8,6 +8,8 @@ import android.os.Build
 import android.provider.Settings
 
 object HomeRoleManager {
+    private const val REQUEST_HOME_ROLE = 4101
+
     fun isDefaultHome(context: Context): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val roles = context.getSystemService(RoleManager::class.java)
@@ -22,7 +24,14 @@ object HomeRoleManager {
             val roles = activity.getSystemService(RoleManager::class.java)
             if (roles != null && roles.isRoleAvailable(RoleManager.ROLE_HOME) &&
                 !roles.isRoleHeld(RoleManager.ROLE_HOME)) {
-                activity.startActivity(roles.createRequestRoleIntent(RoleManager.ROLE_HOME))
+                // RoleController identifies the requesting package from the
+                // activity result caller. A plain startActivity() leaves the
+                // package null and Android silently rejects the request.
+                @Suppress("DEPRECATION")
+                activity.startActivityForResult(
+                    roles.createRequestRoleIntent(RoleManager.ROLE_HOME),
+                    REQUEST_HOME_ROLE
+                )
                 return
             }
         }
