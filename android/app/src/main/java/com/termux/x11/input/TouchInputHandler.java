@@ -649,6 +649,19 @@ public class TouchInputHandler {
                 return true;
             }
 
+            // NativOS uses simulated touch so taps work reliably through Phoc's
+            // nested X11 backend. On a phone, a one-finger swipe must behave like
+            // a native touchscreen scroll rather than requiring two fingers.
+            // Preserve long-press dragging for sliders and movable controls.
+            if (pointerCount == 1
+                    && mInputStrategy instanceof InputStrategyInterface.SimulatedTouchInputStrategy
+                    && !mIsDragging) {
+                moveCursorToScreenPoint(e1.getX(), e1.getY());
+                mInputStrategy.onScroll(distanceX, distanceY);
+                mSuppressCursorMovement = true;
+                return true;
+            }
+
             if (pointerCount != 1 || mSuppressCursorMovement)
                 return false;
 
