@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -66,6 +67,7 @@ class KioskActivity : Activity() {
     private var statusText: TextView? = null
     private var progressBar: ProgressBar? = null
     private var detailText: TextView? = null
+    private var keyboardButton: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -215,6 +217,31 @@ class KioskActivity : Activity() {
         overlayLayout!!.addView(detailText)
         rootLayout!!.addView(overlayLayout, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        val density = resources.displayMetrics.density
+        keyboardButton = TextView(this).apply {
+            text = "⌨"
+            contentDescription = "Show Android keyboard"
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 12f * density
+                setColor(Color.argb(180, 25, 25, 25))
+            }
+            elevation = 8f * density
+            visibility = View.GONE
+            setOnClickListener { MainActivity.toggleKeyboardVisibility(this@KioskActivity) }
+        }
+        rootLayout!!.addView(keyboardButton, FrameLayout.LayoutParams(
+            (52 * density).toInt(),
+            (48 * density).toInt(),
+            Gravity.TOP or Gravity.END
+        ).apply {
+            topMargin = (52 * density).toInt()
+            rightMargin = (12 * density).toInt()
+        })
 
         setContentView(rootLayout)
         enterImmersiveMode()
@@ -408,7 +435,11 @@ class KioskActivity : Activity() {
             if (!chrootManager.awaitDesktopReady()) {
                 throw IllegalStateException("Phosh did not become ready")
             }
-            runOnUiThread { overlayLayout?.visibility = View.GONE }
+            runOnUiThread {
+                overlayLayout?.visibility = View.GONE
+                keyboardButton?.visibility = View.VISIBLE
+                keyboardButton?.bringToFront()
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "Boot sequence failed", e)

@@ -932,6 +932,11 @@ public class LorieView extends SurfaceView implements InputStub {
     }
 
     @Override
+    public boolean onCheckIsTextEditor() {
+        return true;
+    }
+
+    @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
         if (MainActivity.getPrefs().enforceCharBasedInput.get())
             outAttrs.inputType = InputType.TYPE_NULL;

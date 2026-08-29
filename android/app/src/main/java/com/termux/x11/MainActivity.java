@@ -6,6 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.KeyEvent;
+import android.view.inputmethod.InputMethodManager;
 
 public class MainActivity extends Activity {
     public static final Handler handler = new Handler(Looper.getMainLooper());
@@ -60,7 +61,20 @@ public class MainActivity extends Activity {
         return LorieView.connected();
     }
     
-    public static void toggleKeyboardVisibility(Context context) {}
+    public static void toggleKeyboardVisibility(Context context) {
+        LorieView view = instance.getLorieView();
+        if (view == null)
+            return;
+
+        InputMethodManager inputMethod =
+                (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (inputMethod == null)
+            return;
+
+        view.requestFocus();
+        inputMethod.restartInput(view);
+        view.post(() -> inputMethod.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT));
+    }
     public void toggleExtraKeys() {}
     public void toggleMouseHelper() {}
     
