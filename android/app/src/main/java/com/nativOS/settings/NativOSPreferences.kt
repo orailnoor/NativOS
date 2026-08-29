@@ -3,9 +3,11 @@ package com.nativOS.settings
 import android.content.Context
 
 object NativOSPreferences {
+    enum class OperatingMode { DESKTOP_APP, HOME_LAUNCHER, MINIMAL_ANDROID }
+
     private const val FILE = "nativos_settings"
     private const val HIDE_SYSTEM_BARS = "hide_system_bars"
-    private const val HOME_PROMPT_SHOWN = "home_prompt_shown"
+    private const val OPERATING_MODE = "operating_mode"
 
     fun hideSystemBars(context: Context): Boolean =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -16,12 +18,15 @@ object NativOSPreferences {
             .edit().putBoolean(HIDE_SYSTEM_BARS, enabled).apply()
     }
 
-    fun homePromptShown(context: Context): Boolean =
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            .getBoolean(HOME_PROMPT_SHOWN, false)
+    fun operatingMode(context: Context): OperatingMode {
+        val stored = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getString(OPERATING_MODE, OperatingMode.DESKTOP_APP.name)
+        return runCatching { OperatingMode.valueOf(stored.orEmpty()) }
+            .getOrDefault(OperatingMode.DESKTOP_APP)
+    }
 
-    fun markHomePromptShown(context: Context) {
+    fun setOperatingMode(context: Context, mode: OperatingMode) {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            .edit().putBoolean(HOME_PROMPT_SHOWN, true).apply()
+            .edit().putString(OPERATING_MODE, mode.name).apply()
     }
 }

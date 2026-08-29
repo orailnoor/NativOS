@@ -26,7 +26,6 @@ import com.nativOS.bridge.AndroidAppIntegration
 import com.nativOS.bridge.BridgeService
 import com.nativOS.runtime.ChrootManager
 import com.nativOS.runtime.RootfsManager
-import com.nativOS.settings.HomeRoleManager
 import com.nativOS.settings.NativOSPreferences
 import com.nativOS.x11.X11ServiceClient
 import com.nativOS.x11.X11InputController
@@ -249,7 +248,6 @@ class KioskActivity : Activity() {
         })
 
         setContentView(rootLayout)
-        rootLayout?.post { HomeRoleManager.promptOnce(this) }
         enterImmersiveMode()
         Log.i(TAG, "KioskActivity created")
 

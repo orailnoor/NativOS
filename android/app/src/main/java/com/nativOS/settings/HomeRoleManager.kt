@@ -38,9 +38,4 @@ object HomeRoleManager {
         activity.startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
     }
 
-    fun promptOnce(activity: Activity) {
-        if (isDefaultHome(activity) || NativOSPreferences.homePromptShown(activity)) return
-        NativOSPreferences.markHomePromptShown(activity)
-        requestDefaultHome(activity)
-    }
 }
