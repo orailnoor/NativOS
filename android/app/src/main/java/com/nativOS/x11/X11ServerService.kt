@@ -58,7 +58,7 @@ class X11ServerService : Service() {
                     val success = try {
                         configureEnvironment()
                         Log.i(TAG, "Starting native X server in pid=${android.os.Process.myPid()}")
-                        CmdEntryPoint.start(arrayOf(":0", "-nolock", "-legacy-drawing"))
+                        cmdEntryPoint.start(arrayOf(":0", "-nolock", "-legacy-drawing"))
                     } catch (error: Throwable) {
                         Log.e(TAG, "Native X server failed to start", error)
                         false

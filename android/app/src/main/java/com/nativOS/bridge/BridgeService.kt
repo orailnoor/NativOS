@@ -3,6 +3,7 @@ package com.nativOS.bridge
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.net.LocalSocket
 import android.os.IBinder
 import android.system.Os
 import android.util.Log
+import com.nativOS.settings.SettingsActivity
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -308,10 +310,18 @@ class BridgeService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        val settingsIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return Notification.Builder(this, NOTIFICATION_CHANNEL)
             .setContentTitle("NativOS")
-            .setContentText("Linux bridge active")
+            .setContentText("Linux desktop active · Tap for settings")
             .setSmallIcon(android.R.drawable.ic_menu_manage)
+            .setContentIntent(settingsIntent)
+            .addAction(android.R.drawable.ic_menu_preferences, "Settings", settingsIntent)
             .setOngoing(true)
             .build()
     }

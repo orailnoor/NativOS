@@ -264,7 +264,9 @@ public class TouchInputHandler {
                 });
         android.util.Log.d("DEVICES", "requesting stylus " + stylusAvailable.get());
         android.util.Log.d("DEVICES", "external keyboard connected " + externalKeyboardAvailable.get());
-        LorieView.requestStylusEnabled(stylusAvailable.get());
+        LorieView view = MainActivity.getInstance().getLorieView();
+        if (view != null)
+            view.requestStylusEnabled(stylusAvailable.get());
         MainActivity.getInstance().setExternalKeyboardConnected(externalKeyboardAvailable.get());
     }
 

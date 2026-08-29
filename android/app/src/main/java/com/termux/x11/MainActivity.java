@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
     }
 
     public static boolean isConnected() {
-        return LorieView.connected();
+        return instance.lorieView != null && instance.lorieView.connected();
     }
     
     public static void toggleKeyboardVisibility(Context context) {

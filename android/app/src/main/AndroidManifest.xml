@@ -128,6 +128,24 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".settings.SettingsActivity"
+            android:exported="true"
+            android:label="NativOS Settings"
+            android:theme="@style/Theme.NativOS" />
+
+        <!-- Optional tile users can add to Android's Quick Settings panel. -->
+        <service
+            android:name=".settings.SettingsTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="NativOS Settings"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- Keep the native X server and LorieView renderer in separate processes. -->
         <service
             android:name=".x11.X11ServerService"

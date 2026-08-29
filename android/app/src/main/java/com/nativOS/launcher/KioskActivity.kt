@@ -26,6 +26,8 @@ import com.nativOS.bridge.AndroidAppIntegration
 import com.nativOS.bridge.BridgeService
 import com.nativOS.runtime.ChrootManager
 import com.nativOS.runtime.RootfsManager
+import com.nativOS.settings.HomeRoleManager
+import com.nativOS.settings.NativOSPreferences
 import com.nativOS.x11.X11ServiceClient
 import com.nativOS.x11.X11InputController
 import com.nativOS.x11.X11ServerService
@@ -247,6 +249,7 @@ class KioskActivity : Activity() {
         })
 
         setContentView(rootLayout)
+        rootLayout?.post { HomeRoleManager.promptOnce(this) }
         enterImmersiveMode()
         Log.i(TAG, "KioskActivity created")
 
@@ -447,8 +450,8 @@ class KioskActivity : Activity() {
                 context = this,
                 onConnected = { connectionFd, logcatFd ->
                     try {
-                        LorieView.connect(connectionFd.detachFd())
-                        logcatFd?.let { LorieView.startLogcat(it.detachFd()) }
+                        lorieView.connect(connectionFd.detachFd())
+                        logcatFd?.let { lorieView.startLogcat(it.detachFd()) }
                         x11InputController = X11InputController(lorieView)
                         lorieView.requestFocus()
                         Log.i(TAG, "LorieView attached to the bundled X11 service")
@@ -466,7 +469,7 @@ class KioskActivity : Activity() {
                 }
             ).also { it.connect() }
 
-            if (!rendererAttached.await(10, TimeUnit.SECONDS) || !LorieView.connected()) {
+            if (!rendererAttached.await(10, TimeUnit.SECONDS) || !lorieView.connected()) {
                 throw rendererError
                     ?: IllegalStateException("LorieView failed to attach to the X11 server")
             }
@@ -516,6 +519,15 @@ class KioskActivity : Activity() {
         super.onResume()
         enterImmersiveMode()
         AndroidAppIntegration.sync(this)
+
+        // A recreated Android Surface may use a multi-buffer queue. Repaint a
+        // few frames so every buffer contains the desktop instead of stale
+        // black/transparent data from before the Android app switch.
+        listOf(50L, 150L, 300L).forEach { delay ->
+            rootLayout?.postDelayed({
+                MainActivity.getInstance().lorieView?.triggerCallback()
+            }, delay)
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -538,6 +550,17 @@ class KioskActivity : Activity() {
     }
 
     private fun enterImmersiveMode() {
+        if (!NativOSPreferences.hideSystemBars(this)) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                window.insetsController?.show(
+                    WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars()
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+            }
+            return
+        }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             window.insetsController?.let { controller ->
                 controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
