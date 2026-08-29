@@ -18,6 +18,7 @@ import com.nativOS.launcher.KioskActivity
 class SettingsActivity : Activity() {
     private lateinit var launcherStatus: TextView
     private lateinit var modeStatus: TextView
+    private lateinit var deGoogleStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,15 +80,42 @@ class SettingsActivity : Activity() {
             }
         }, matchWidth())
         content.addView(Button(this).apply {
-            text = "Minimal Android mode — not enabled yet"
+            text = "De-Googled Android mode — not enabled yet"
             isEnabled = false
         }, matchWidth())
         content.addView(TextView(this).apply {
-            text = "No Android or Google packages are modified by the current modes. Minimal Android will remain a separate, reversible opt-in feature."
+            text = "This mode will remove Google Play Services and Google apps while retaining Android's hardware and vendor layer. It will be a separate, reversible opt-in feature."
             textSize = 14f
             setTextColor(Color.LTGRAY)
             setPadding(0, (8 * density).toInt(), 0, (24 * density).toInt())
         })
+        deGoogleStatus = TextView(this).apply {
+            text = "Google component scan has not been run. No packages have been changed."
+            textSize = 14f
+            setTextColor(Color.LTGRAY)
+            setPadding(0, 0, 0, (8 * density).toInt())
+        }
+        content.addView(deGoogleStatus)
+        content.addView(Button(this).apply {
+            text = "Scan Google components (read-only)"
+            setOnClickListener {
+                isEnabled = false
+                deGoogleStatus.text = "Scanning installed packages…"
+                Thread({
+                    val result = runCatching { DeGoogleManager(this@SettingsActivity).scan() }
+                    runOnUiThread {
+                        isEnabled = true
+                        deGoogleStatus.text = result.fold(
+                            onSuccess = {
+                                "Found ${it.coreServices.size} Google core components and " +
+                                    "${it.googleApps.size} additional Google packages. Nothing was changed."
+                            },
+                            onFailure = { "Scan failed: ${it.message}" }
+                        )
+                    }
+                }, "nativOS-degoogle-scan").start()
+            }
+        }, matchWidth())
 
         launcherStatus = TextView(this).apply {
             textSize = 17f
@@ -141,8 +169,8 @@ class SettingsActivity : Activity() {
                 "Current: optional Linux desktop app"
             NativOSPreferences.OperatingMode.HOME_LAUNCHER ->
                 "Current: Linux-first Home launcher"
-            NativOSPreferences.OperatingMode.MINIMAL_ANDROID ->
-                "Current: Minimal Android"
+            NativOSPreferences.OperatingMode.DEGOOGLED ->
+                "Current: De-Googled Android"
         }
         launcherStatus.text = if (HomeRoleManager.isDefaultHome(this))
             "Home launcher: NativOS is active"

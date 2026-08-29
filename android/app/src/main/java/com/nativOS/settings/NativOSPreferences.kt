@@ -3,7 +3,7 @@ package com.nativOS.settings
 import android.content.Context
 
 object NativOSPreferences {
-    enum class OperatingMode { DESKTOP_APP, HOME_LAUNCHER, MINIMAL_ANDROID }
+    enum class OperatingMode { DESKTOP_APP, HOME_LAUNCHER, DEGOOGLED }
 
     private const val FILE = "nativos_settings"
     private const val HIDE_SYSTEM_BARS = "hide_system_bars"
@@ -21,7 +21,8 @@ object NativOSPreferences {
     fun operatingMode(context: Context): OperatingMode {
         val stored = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
             .getString(OPERATING_MODE, OperatingMode.DESKTOP_APP.name)
-        return runCatching { OperatingMode.valueOf(stored.orEmpty()) }
+        val migrated = if (stored == "MINIMAL_ANDROID") OperatingMode.DEGOOGLED.name else stored
+        return runCatching { OperatingMode.valueOf(migrated.orEmpty()) }
             .getOrDefault(OperatingMode.DESKTOP_APP)
     }
 
