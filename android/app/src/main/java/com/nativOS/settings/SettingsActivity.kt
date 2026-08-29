@@ -116,6 +116,12 @@ class SettingsActivity : Activity() {
                 }, "nativOS-degoogle-scan").start()
             }
         }, matchWidth())
+        content.addView(Button(this).apply {
+            text = "Open System App Remover"
+            setOnClickListener {
+                startActivity(Intent(this@SettingsActivity, SystemAppRemoverActivity::class.java))
+            }
+        }, matchWidth())
 
         launcherStatus = TextView(this).apply {
             textSize = 17f

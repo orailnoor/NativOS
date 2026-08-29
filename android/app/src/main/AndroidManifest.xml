@@ -134,6 +134,12 @@
             android:label="NativOS Settings"
             android:theme="@style/Theme.NativOS" />
 
+        <activity
+            android:name=".settings.SystemAppRemoverActivity"
+            android:exported="false"
+            android:label="System App Remover"
+            android:theme="@style/Theme.NativOS" />
+
         <!-- Optional tile users can add to Android's Quick Settings panel. -->
         <service
             android:name=".settings.SettingsTileService"
