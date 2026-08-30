@@ -3,6 +3,7 @@ package com.nativOS.launcher
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -71,6 +72,8 @@ class KioskActivity : Activity() {
     private var progressBar: ProgressBar? = null
     private var detailText: TextView? = null
     private var keyboardButton: TextView? = null
+    private var desktopView: LorieView? = null
+    private val desktopSafeInsets = Rect()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -176,8 +179,15 @@ class KioskActivity : Activity() {
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         )
 
-        rootLayout = FrameLayout(this)
-        // rootLayout!!.setBackgroundColor(Color.BLACK) // Removed: Solid background covers SurfaceView!
+        rootLayout = FrameLayout(this).apply {
+            // Safe-area margins intentionally expose this background around the
+            // X11 surface instead of stretching Linux under a cutout or nav bar.
+            setBackgroundColor(Color.BLACK)
+            setOnApplyWindowInsetsListener { _, insets ->
+                updateDesktopSafeInsets(insets)
+                insets
+            }
+        }
 
         // Instead of embedding LorieView, we will launch the Termux:X11 companion app later.
 
@@ -248,6 +258,7 @@ class KioskActivity : Activity() {
         })
 
         setContentView(rootLayout)
+        rootLayout?.requestApplyInsets()
         enterImmersiveMode()
         Log.i(TAG, "KioskActivity created")
 
@@ -295,6 +306,59 @@ class KioskActivity : Activity() {
                 else -> false
             }
         }
+    }
+
+    /**
+     * Keep the Linux display inside Android's physical safe area. System bars
+     * may be hidden, but their stable geometry still protects gesture handles,
+     * navigation buttons and landscape side bars. The display cutout protects
+     * Phosh's centered clock from notches and hole-punch cameras.
+     */
+    private fun updateDesktopSafeInsets(insets: WindowInsets) {
+        val cutout = insets.displayCutout
+        val left: Int
+        val right: Int
+        val bottom: Int
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val navigation = insets.getInsetsIgnoringVisibility(WindowInsets.Type.navigationBars())
+            val waterfall = cutout?.waterfallInsets
+            left = maxOf(cutout?.safeInsetLeft ?: 0, navigation.left, waterfall?.left ?: 0)
+            right = maxOf(cutout?.safeInsetRight ?: 0, navigation.right, waterfall?.right ?: 0)
+            bottom = maxOf(cutout?.safeInsetBottom ?: 0, navigation.bottom, waterfall?.bottom ?: 0)
+        } else {
+            @Suppress("DEPRECATION")
+            left = maxOf(cutout?.safeInsetLeft ?: 0, insets.stableInsetLeft)
+            @Suppress("DEPRECATION")
+            right = maxOf(cutout?.safeInsetRight ?: 0, insets.stableInsetRight)
+            @Suppress("DEPRECATION")
+            bottom = maxOf(cutout?.safeInsetBottom ?: 0, insets.stableInsetBottom)
+        }
+        val top = cutout?.safeInsetTop ?: 0
+        val changed = desktopSafeInsets.left != left || desktopSafeInsets.top != top ||
+            desktopSafeInsets.right != right || desktopSafeInsets.bottom != bottom
+        if (!changed) return
+
+        desktopSafeInsets.set(left, top, right, bottom)
+        Log.i(TAG, "Desktop safe area: left=$left top=$top right=$right bottom=$bottom")
+        desktopView?.let(::applyDesktopSafeArea)
+    }
+
+    private fun applyDesktopSafeArea(view: LorieView) {
+        val params = (view.layoutParams as? FrameLayout.LayoutParams)
+            ?: FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        params.width = FrameLayout.LayoutParams.MATCH_PARENT
+        params.height = FrameLayout.LayoutParams.MATCH_PARENT
+        params.setMargins(
+            desktopSafeInsets.left,
+            desktopSafeInsets.top,
+            desktopSafeInsets.right,
+            desktopSafeInsets.bottom
+        )
+        view.layoutParams = params
+        view.requestLayout()
     }
 
     private fun runBootSequence() {
@@ -435,6 +499,8 @@ class KioskActivity : Activity() {
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         FrameLayout.LayoutParams.MATCH_PARENT
                     )
+                    desktopView = lorieView
+                    applyDesktopSafeArea(lorieView)
                     lorieView.setZOrderOnTop(false)
                     rootLayout?.addView(lorieView, 0)
                 } catch (error: Throwable) {
@@ -608,6 +674,7 @@ class KioskActivity : Activity() {
         x11ServiceClient?.disconnect()
         x11ServiceClient = null
         x11InputController = null
+        desktopView = null
         stopService(Intent(this, X11ServerService::class.java))
         if (::chrootManager.isInitialized) {
             Thread({ chrootManager.stopSession() }, "nativOS-stop").start()
