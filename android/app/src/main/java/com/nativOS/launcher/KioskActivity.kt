@@ -72,6 +72,7 @@ class KioskActivity : Activity() {
     private var progressBar: ProgressBar? = null
     private var detailText: TextView? = null
     private var keyboardButton: TextView? = null
+    private var navigationHandle: FrameLayout? = null
     private var desktopView: LorieView? = null
     private val desktopSafeInsets = Rect()
 
@@ -257,6 +258,52 @@ class KioskActivity : Activity() {
             rightMargin = (12 * density).toInt()
         })
 
+        // Phosh 0.38 has no persistent bottom affordance. Provide a small,
+        // functional phone-style handle: tap or swipe it upward to toggle the
+        // Phosh overview via its Super_L shortcut.
+        navigationHandle = FrameLayout(this).apply {
+            contentDescription = "Open Linux overview"
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { togglePhoshOverview() }
+            addView(View(this@KioskActivity).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 3f * density
+                    setColor(Color.argb(220, 255, 255, 255))
+                }
+            }, FrameLayout.LayoutParams(
+                (48 * density).toInt(),
+                (5 * density).toInt(),
+                Gravity.CENTER
+            ))
+            val swipeThreshold = 12f * density
+            var downY = 0f
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downY = event.rawY
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (downY - event.rawY >= swipeThreshold ||
+                            kotlin.math.abs(downY - event.rawY) < swipeThreshold) {
+                            view.performClick()
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> true
+                    else -> true
+                }
+            }
+        }
+        rootLayout!!.addView(navigationHandle, FrameLayout.LayoutParams(
+            (88 * density).toInt(),
+            (28 * density).toInt(),
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ))
+
         setContentView(rootLayout)
         rootLayout?.requestApplyInsets()
         enterImmersiveMode()
@@ -341,6 +388,11 @@ class KioskActivity : Activity() {
         desktopSafeInsets.set(left, top, right, bottom)
         Log.i(TAG, "Desktop safe area: left=$left top=$top right=$right bottom=$bottom")
         desktopView?.let(::applyDesktopSafeArea)
+        navigationHandle?.let { handle ->
+            val params = handle.layoutParams as FrameLayout.LayoutParams
+            params.bottomMargin = bottom
+            handle.layoutParams = params
+        }
     }
 
     private fun applyDesktopSafeArea(view: LorieView) {
@@ -359,6 +411,16 @@ class KioskActivity : Activity() {
         )
         view.layoutParams = params
         view.requestLayout()
+    }
+
+    private fun togglePhoshOverview() {
+        val view = desktopView ?: return
+        view.sendKeyEvent(0, KeyEvent.KEYCODE_META_LEFT, true)
+        view.postDelayed({
+            if (view.isAttachedToWindow) {
+                view.sendKeyEvent(0, KeyEvent.KEYCODE_META_LEFT, false)
+            }
+        }, 40)
     }
 
     private fun runBootSequence() {
@@ -567,6 +629,8 @@ class KioskActivity : Activity() {
                 overlayLayout?.visibility = View.GONE
                 keyboardButton?.visibility = View.VISIBLE
                 keyboardButton?.bringToFront()
+                navigationHandle?.visibility = View.VISIBLE
+                navigationHandle?.bringToFront()
             }
 
         } catch (e: Exception) {
@@ -674,6 +738,7 @@ class KioskActivity : Activity() {
         x11ServiceClient?.disconnect()
         x11ServiceClient = null
         x11InputController = null
+        navigationHandle = null
         desktopView = null
         stopService(Intent(this, X11ServerService::class.java))
         if (::chrootManager.isInitialized) {

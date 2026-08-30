@@ -58,25 +58,36 @@ class RootfsManager(private val context: Context) {
             rootfsDir,
             "usr/share/glib-2.0/schemas/org.gnome.settings-daemon.peripherals.gschema.xml"
         )
-        if (schema.exists()) return true
+        val svgLoader = File(
+            rootfsDir,
+            "usr/lib/aarch64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so"
+        )
+        if (schema.exists() && svgLoader.exists()) return true
 
-        Log.w(TAG, "Phosh runtime schema missing; repairing interrupted provisioning")
+        Log.w(TAG, "Phosh runtime components missing; repairing interrupted provisioning")
         val result = chrootManager.execChroot(
             """
                 dpkg --configure -a || true
                 apt-get update || exit 1
                 TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC \
                     apt-get install -y --no-install-recommends \
-                    gnome-settings-daemon-common || exit 1
+                    gnome-settings-daemon-common librsvg2-common || exit 1
                 glib-compile-schemas /usr/share/glib-2.0/schemas || exit 1
+                GDK_LOADER=${'$'}(find /usr/lib -name gdk-pixbuf-query-loaders | head -n 1)
+                if [ -x "${'$'}GDK_LOADER" ]; then
+                    "${'$'}GDK_LOADER" > "${'$'}(dirname "${'$'}GDK_LOADER")/2.10.0/loaders.cache" || exit 1
+                fi
+                gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+                gtk-update-icon-cache -f -t /usr/share/icons/Adwaita 2>/dev/null || true
                 test -f /usr/share/glib-2.0/schemas/org.gnome.settings-daemon.peripherals.gschema.xml
+                test -f /usr/lib/aarch64-linux-gnu/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so
             """.trimIndent()
         )
-        if (result == 0 && schema.exists()) {
-            Log.i(TAG, "Phosh runtime schemas repaired")
+        if (result == 0 && schema.exists() && svgLoader.exists()) {
+            Log.i(TAG, "Phosh runtime schemas and SVG loader repaired")
             return true
         }
-        Log.e(TAG, "Could not repair Phosh runtime schemas (exit $result)")
+        Log.e(TAG, "Could not repair Phosh runtime components (exit $result)")
         return false
     }
 
