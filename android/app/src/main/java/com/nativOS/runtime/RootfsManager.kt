@@ -47,6 +47,39 @@ class RootfsManager(private val context: Context) {
 
     fun isFlatpakInstalled(): Boolean = File(rootfsDir, "usr/bin/flatpak").exists()
 
+    /**
+     * Repair a partially provisioned Phosh installation. The phoc binary can be
+     * unpacked before the remaining packages finish, so it is not a sufficient
+     * readiness marker by itself. Without the touchscreen schema Phosh aborts
+     * immediately and the X11 cursor visibly flickers in a restart loop.
+     */
+    fun ensurePhoshRuntime(chrootManager: ChrootManager): Boolean {
+        val schema = File(
+            rootfsDir,
+            "usr/share/glib-2.0/schemas/org.gnome.settings-daemon.peripherals.gschema.xml"
+        )
+        if (schema.exists()) return true
+
+        Log.w(TAG, "Phosh runtime schema missing; repairing interrupted provisioning")
+        val result = chrootManager.execChroot(
+            """
+                dpkg --configure -a || true
+                apt-get update || exit 1
+                TMPDIR=/tmp DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC \
+                    apt-get install -y --no-install-recommends \
+                    gnome-settings-daemon-common || exit 1
+                glib-compile-schemas /usr/share/glib-2.0/schemas || exit 1
+                test -f /usr/share/glib-2.0/schemas/org.gnome.settings-daemon.peripherals.gschema.xml
+            """.trimIndent()
+        )
+        if (result == 0 && schema.exists()) {
+            Log.i(TAG, "Phosh runtime schemas repaired")
+            return true
+        }
+        Log.e(TAG, "Could not repair Phosh runtime schemas (exit $result)")
+        return false
+    }
+
     /** Install the adaptive Wayland terminal and remove the two legacy XTerm launchers. */
     fun ensureProfessionalTerminal(chrootManager: ChrootManager): Boolean {
         val console = File(rootfsDir, "usr/bin/kgx")

@@ -374,6 +374,19 @@ class KioskActivity : Activity() {
                 updateOverlay(0.95, "Phosh desktop found", "")
             }
 
+            // A first-boot install can be interrupted after phoc is unpacked but
+            // before Phosh's required schemas arrive. Repair that partial state
+            // instead of entering an invisible compositor restart loop.
+            updateOverlay(0.95, "Checking desktop components...", "Phosh runtime")
+            if (!rootfsManager.ensurePhoshRuntime(chrootManager)) {
+                updateOverlay(
+                    -1.0,
+                    "Desktop repair failed",
+                    "Connect to the internet and reopen NativOS"
+                )
+                return
+            }
+
             // Migrate existing installs away from the tiny unmanaged XTerm/UXTerm
             // windows. GNOME Console is adaptive and is maximized by Phosh.
             updateOverlay(0.95, "Checking terminal...", "GNOME Console")
