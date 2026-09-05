@@ -617,6 +617,9 @@ public class TouchInputHandler {
         @Override
         public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
             int pointerCount = e2.getPointerCount();
+            // GestureDetector permits the initial event to be null. This also
+            // occurs when double-tap dragging delegates to onScroll below.
+            MotionEvent originEvent = e1 != null ? e1 : e2;
 
             // For captured touchpad pointer:
             // Automatic (for touchpad) mode is needed because touchpads ignore screen orientation and report physical X and Y
@@ -654,7 +657,7 @@ public class TouchInputHandler {
                 if (!(mInputStrategy instanceof InputStrategyInterface.TrackpadInputStrategy)) {
                     // Ensure the cursor is located at the coordinates of the original event,
                     // otherwise the target window may not receive the scroll event correctly.
-                    moveCursorToScreenPoint(e1.getX(), e1.getY());
+                    moveCursorToScreenPoint(originEvent.getX(), originEvent.getY());
                 }
                 mInputStrategy.onScroll(distanceX, distanceY);
 
@@ -670,7 +673,7 @@ public class TouchInputHandler {
             if (pointerCount == 1
                     && mInputStrategy instanceof InputStrategyInterface.SimulatedTouchInputStrategy
                     && !mIsDragging) {
-                moveCursorToScreenPoint(e1.getX(), e1.getY());
+                moveCursorToScreenPoint(originEvent.getX(), originEvent.getY());
                 mInputStrategy.onScroll(distanceX, distanceY);
                 mSuppressCursorMovement = true;
                 return true;

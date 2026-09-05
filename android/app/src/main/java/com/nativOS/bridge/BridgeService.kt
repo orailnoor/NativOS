@@ -12,6 +12,7 @@ import android.net.LocalSocket
 import android.os.IBinder
 import android.system.Os
 import android.util.Log
+import com.nativOS.launcher.KioskActivity
 import com.nativOS.settings.SettingsActivity
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -37,6 +38,7 @@ class BridgeService : Service() {
         private const val TAG = "NativOS.Bridge"
         private const val NOTIFICATION_CHANNEL = "nativOS_bridge"
         private const val NOTIFICATION_ID = 1001
+        const val ACTION_REFRESH_NOTIFICATION = "com.nativOS.action.REFRESH_NOTIFICATION"
     }
 
     private var serverSocket: LocalServerSocket? = null
@@ -89,11 +91,14 @@ class BridgeService : Service() {
                                 Log.w(TAG, "Rejected Android app launch request: $line")
                                 return@forEach
                             }
-                            val intent = Intent().apply {
-                                component = android.content.ComponentName(fields[0], fields[1])
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            val component = android.content.ComponentName(fields[0], fields[1])
+                            if (!KioskActivity.launchAndroidApp(component)) {
+                                startActivity(Intent().apply {
+                                    this.component = component
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                })
+                                AndroidAppIntegration.markAndroidAppLaunched()
                             }
-                            startActivity(intent)
                             Log.i(TAG, "Launched Android app ${fields[0]}/${fields[1]}")
                         }
                     }
@@ -105,6 +110,9 @@ class BridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REFRESH_NOTIFICATION) {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
         return START_STICKY // Restart if killed
     }
 
@@ -322,6 +330,9 @@ class BridgeService : Service() {
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setContentIntent(settingsIntent)
             .addAction(android.R.drawable.ic_menu_preferences, "Settings", settingsIntent)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .build()
     }

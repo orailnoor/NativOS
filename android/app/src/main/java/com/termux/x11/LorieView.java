@@ -659,6 +659,11 @@ public class LorieView extends SurfaceView implements InputStub {
         }
     }
 
+    /** A detached view has released its native renderer and must not be reused. */
+    public boolean isNativeContextUsable() {
+        return mNativeContext != 0;
+    }
+
     public void setCallback(Callback callback) {
         mCallback = callback;
         triggerCallback();

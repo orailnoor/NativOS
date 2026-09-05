@@ -10,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.google.android.material.switchmaterial.SwitchMaterial
+import com.nativOS.bridge.AndroidAppIntegration
 import com.nativOS.launcher.KioskActivity
 
 class SettingsActivity : Activity() {
@@ -94,8 +95,20 @@ class SettingsActivity : Activity() {
         content.addView(group().apply {
             addView(switchRow(
                 "Immersive desktop",
-                "Hide Android system bars while Linux is active"
-            ))
+                "Hide Android system bars while Linux is active",
+                NativOSPreferences.hideSystemBars(this@SettingsActivity)
+            ) { checked ->
+                NativOSPreferences.setHideSystemBars(this@SettingsActivity, checked)
+            })
+            addView(PremiumUi.separator(this@SettingsActivity))
+            addView(switchRow(
+                "Show Android apps",
+                "Include installed Android apps in the Linux drawer",
+                NativOSPreferences.showAndroidApps(this@SettingsActivity)
+            ) { checked ->
+                NativOSPreferences.setShowAndroidApps(this@SettingsActivity, checked)
+                AndroidAppIntegration.sync(this@SettingsActivity)
+            })
             addView(PremiumUi.separator(this@SettingsActivity))
             addView(row("Default Home app", "Choose which launcher Android uses", trailingText = "›") {
                 HomeRoleManager.requestDefaultHome(this@SettingsActivity)
@@ -188,7 +201,12 @@ class SettingsActivity : Activity() {
         ).apply { gravity = Gravity.CENTER })
     }
 
-    private fun switchRow(title: String, subtitle: String) = LinearLayout(this).apply {
+    private fun switchRow(
+        title: String,
+        subtitle: String,
+        checked: Boolean,
+        onChanged: (Boolean) -> Unit
+    ) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         minimumHeight = dp(66)
@@ -202,10 +220,8 @@ class SettingsActivity : Activity() {
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         addView(SwitchMaterial(this@SettingsActivity).apply {
             text = ""
-            isChecked = NativOSPreferences.hideSystemBars(this@SettingsActivity)
-            setOnCheckedChangeListener { _, checked ->
-                NativOSPreferences.setHideSystemBars(this@SettingsActivity, checked)
-            }
+            isChecked = checked
+            setOnCheckedChangeListener { _, value -> onChanged(value) }
         })
     }
 

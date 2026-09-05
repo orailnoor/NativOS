@@ -38,7 +38,7 @@ public class MainActivity extends Activity {
         if (getBaseContext() == null) {
             attachBaseContext(context);
         }
-        if (lorieView == null) {
+        if (lorieView == null || !lorieView.isNativeContextUsable()) {
             lorieView = new LorieView(context);
         }
     }

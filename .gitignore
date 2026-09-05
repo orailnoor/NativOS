@@ -12,5 +12,9 @@ local.properties
 *.tmp
 *.bak
 .DS_Store
+android/signing/
 rootfs/
 *.tar.gz
+*.tgz
+!android/app/src/main/assets/rootfs/
+!android/app/src/main/assets/rootfs/README.md

@@ -16,6 +16,7 @@ class RootfsManager(private val context: Context) {
     companion object {
         private const val TAG = "NativOS.RootfsManager"
         private const val BUFFER_SIZE = 8192
+        private const val BUNDLED_ROOTFS_ASSET = "rootfs/nativos-rootfs-arm64.tgz"
 
         val DISTRO_URLS = mapOf(
             "ubuntu" to "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz",
@@ -46,6 +47,61 @@ class RootfsManager(private val context: Context) {
     fun isSetupComplete(): Boolean = setupCompleteFile.exists()
 
     fun isFlatpakInstalled(): Boolean = File(rootfsDir, "usr/bin/flatpak").exists()
+
+    /** Copy the production rootfs bundled in the signed APK into the staging area. */
+    fun stageBundledRootfs(onProgress: (progress: Double, status: String) -> Unit): Boolean {
+        val assetName = BUNDLED_ROOTFS_ASSET.substringAfterLast('/')
+        val available = runCatching {
+            context.assets.list("rootfs")?.contains(assetName) == true
+        }.getOrDefault(false)
+        if (!available) return false
+
+        return try {
+            downloadDir.mkdirs()
+            val target = File(downloadDir, "$DEFAULT_DISTRO-rootfs.tar.gz")
+            val temporary = File(downloadDir, "$DEFAULT_DISTRO-rootfs.tar.gz.part")
+            onProgress(0.0, "Preparing bundled Linux system...")
+            var copied = 0L
+            var lastReportedPercent = -1
+            val expected = runCatching {
+                context.assets.openFd(BUNDLED_ROOTFS_ASSET).use { it.length }
+            }.getOrDefault(-1L)
+            context.assets.open(BUNDLED_ROOTFS_ASSET).use { input ->
+                FileOutputStream(temporary, false).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        copied += count
+                        if (expected > 0) {
+                            val percent = ((copied * 100L) / expected).toInt().coerceIn(0, 100)
+                            if (percent != lastReportedPercent) {
+                                lastReportedPercent = percent
+                                onProgress(percent / 100.0, "Preparing bundled Linux system...")
+                            }
+                        }
+                    }
+                    output.fd.sync()
+                }
+            }
+            if (copied == 0L) throw IllegalStateException("Bundled rootfs is empty")
+            if (target.exists() && !target.delete()) {
+                throw IllegalStateException("Could not replace staged rootfs")
+            }
+            if (!temporary.renameTo(target)) {
+                throw IllegalStateException("Could not finalize staged rootfs")
+            }
+            configFile.writeText(DEFAULT_DISTRO)
+            onProgress(1.0, "Bundled Linux system ready")
+            Log.i(TAG, "Staged bundled rootfs (${copied / (1024 * 1024)} MiB)")
+            true
+        } catch (error: Throwable) {
+            File(downloadDir, "$DEFAULT_DISTRO-rootfs.tar.gz.part").delete()
+            Log.e(TAG, "Could not stage bundled rootfs", error)
+            false
+        }
+    }
 
     /**
      * Repair a partially provisioned Phosh installation. The phoc binary can be

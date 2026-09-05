@@ -58,7 +58,9 @@ class X11ServerService : Service() {
                     val success = try {
                         configureEnvironment()
                         Log.i(TAG, "Starting native X server in pid=${android.os.Process.myPid()}")
-                        cmdEntryPoint.start(arrayOf(":0", "-nolock", "-legacy-drawing"))
+                        // NativOS uses direct touchscreen input. Disable the X
+                        // server cursor itself so no mouse arrow is composited.
+                        cmdEntryPoint.start(arrayOf(":0", "-nolock", "-legacy-drawing", "-nocursor"))
                     } catch (error: Throwable) {
                         Log.e(TAG, "Native X server failed to start", error)
                         false

@@ -108,12 +108,22 @@
         android:usesCleartextTraffic="true"
         tools:targetApi="35">
 
+        <provider
+            android:name=".storage.SharedFolderProvider"
+            android:authorities="${applicationId}.shared"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
         <!-- ── Kiosk Launcher (registered as Home) ── -->
         <activity
             android:name=".launcher.KioskActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:theme="@style/Theme.NativOS.Fullscreen">
             <intent-filter>

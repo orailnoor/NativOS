@@ -61,11 +61,13 @@ class RootShell(private val context: Context) {
 
     /** Returns true if root access is available and granted. */
     fun hasRoot(): Boolean {
-        cachedRootState?.let { return it }
+        // A denial is often temporary while Magisk/KernelSU is showing its
+        // approval UI. Cache successful access, but always retry a denial.
+        if (cachedRootState == true) return true
         val su = findSuPath() ?: return false
         val result = execSync(su, "id -u")
         val hasRoot = result.trim() == "0"
-        cachedRootState = hasRoot
+        cachedRootState = if (hasRoot) true else null
         Log.i(TAG, "Root check: $hasRoot (su=$su)")
         return hasRoot
     }

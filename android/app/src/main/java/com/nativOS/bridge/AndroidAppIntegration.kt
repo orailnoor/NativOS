@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.util.Log
+import com.nativOS.settings.NativOSPreferences
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -14,6 +15,19 @@ import java.security.MessageDigest
 object AndroidAppIntegration {
     private const val TAG = "NativOS.AndroidApps"
     const val LAUNCH_PIPE = "android-launch.fifo"
+    @Volatile private var returningFromAndroidApp = false
+
+    /** Records launches initiated by a Phosh Android-app shortcut. */
+    fun markAndroidAppLaunched() {
+        returningFromAndroidApp = true
+    }
+
+    /** Consumes the pending return so ordinary pause/resume events are untouched. */
+    fun consumeAndroidAppReturn(): Boolean {
+        if (!returningFromAndroidApp) return false
+        returningFromAndroidApp = false
+        return true
+    }
 
     fun sync(context: Context) {
         try {
@@ -30,12 +44,16 @@ object AndroidAppIntegration {
                 |""".trimMargin()
             )
 
-            val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            @Suppress("DEPRECATION")
-            val activities = context.packageManager.queryIntentActivities(launcherIntent, 0)
-                .filter { it.activityInfo.packageName != context.packageName }
-                .distinctBy { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
-                .sortedBy { it.loadLabel(context.packageManager).toString().lowercase() }
+            val activities = if (NativOSPreferences.showAndroidApps(context)) {
+                val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                @Suppress("DEPRECATION")
+                context.packageManager.queryIntentActivities(launcherIntent, 0)
+                    .filter { it.activityInfo.packageName != context.packageName }
+                    .distinctBy { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
+                    .sortedBy { it.loadLabel(context.packageManager).toString().lowercase() }
+            } else {
+                emptyList()
+            }
 
             val expectedDesktopFiles = mutableSetOf<String>()
             val expectedIconFiles = mutableSetOf<String>()
@@ -72,7 +90,8 @@ object AndroidAppIntegration {
 
             applicationsDir.listFiles()?.filter { it.name !in expectedDesktopFiles }?.forEach { it.delete() }
             iconsDir.listFiles()?.filter { it.name !in expectedIconFiles }?.forEach { it.delete() }
-            Log.i(TAG, "Published ${activities.size} Android apps to Phosh")
+            Log.i(TAG, "Published ${activities.size} Android apps to Phosh " +
+                "(enabled=${NativOSPreferences.showAndroidApps(context)})")
         } catch (error: Throwable) {
             Log.e(TAG, "Could not publish Android apps", error)
         }

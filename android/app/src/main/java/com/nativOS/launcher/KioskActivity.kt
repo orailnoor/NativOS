@@ -1,11 +1,16 @@
 package com.nativOS.launcher
 
+import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -27,7 +32,9 @@ import com.nativOS.bridge.AndroidAppIntegration
 import com.nativOS.bridge.BridgeService
 import com.nativOS.runtime.ChrootManager
 import com.nativOS.runtime.RootfsManager
+import com.nativOS.storage.SharedFolderSync
 import com.nativOS.settings.NativOSPreferences
+import com.nativOS.settings.SettingsActivity
 import com.nativOS.x11.X11ServiceClient
 import com.nativOS.x11.X11InputController
 import com.nativOS.x11.X11ServerService
@@ -35,6 +42,7 @@ import com.termux.x11.MainActivity
 import com.termux.x11.LorieView
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.lang.ref.WeakReference
 
 /**
  * Full-screen kiosk activity that replaces the Android home screen.
@@ -54,6 +62,27 @@ class KioskActivity : Activity() {
         private const val TAG = "NativOS.Kiosk"
         private const val ESCAPE_TAP_COUNT = 5
         private const val ESCAPE_WINDOW_MS = 3000L
+        private const val REQUEST_NOTIFICATIONS = 1201
+        @Volatile private var activeInstance: WeakReference<KioskActivity>? = null
+
+        /**
+         * Launch an Android shortcut from the visible activity so it is placed
+         * above NativOS in the same Android task. Back then reliably returns to
+         * the Linux desktop instead of Android's launcher or an older app task.
+         */
+        fun launchAndroidApp(component: ComponentName): Boolean {
+            val activity = activeInstance?.get() ?: return false
+            if (activity.isFinishing || activity.isDestroyed) return false
+            AndroidAppIntegration.markAndroidAppLaunched()
+            activity.runOnUiThread {
+                runCatching {
+                    activity.startActivity(Intent().apply { this.component = component })
+                }.onFailure {
+                    Log.e(TAG, "Could not launch Android app $component", it)
+                }
+            }
+            return true
+        }
     }
 
     private lateinit var chrootManager: ChrootManager
@@ -64,6 +93,8 @@ class KioskActivity : Activity() {
 
     // Error flag — set by lambda callbacks to halt the boot sequence
     @Volatile private var bootFailed = false
+    @Volatile private var bootSequenceRunning = false
+    @Volatile private var waitingForRoot = false
 
     // UI elements
     private var rootLayout: FrameLayout? = null
@@ -72,12 +103,14 @@ class KioskActivity : Activity() {
     private var progressBar: ProgressBar? = null
     private var detailText: TextView? = null
     private var keyboardButton: TextView? = null
+    private var assistiveMenu: LinearLayout? = null
     private var navigationHandle: FrameLayout? = null
     private var desktopView: LorieView? = null
     private val desktopSafeInsets = Rect()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        activeInstance = WeakReference(this)
 
         // CRITICAL: Set TMPDIR before ANY Termux/X11 classes are loaded.
         // If libXlorie is loaded before this, it will cache an empty TMPDIR and fail to create sockets.
@@ -234,29 +267,61 @@ class KioskActivity : Activity() {
 
         val density = resources.displayMetrics.density
         keyboardButton = TextView(this).apply {
-            text = "⌨"
-            contentDescription = "Show Android keyboard"
+            text = "⋮"
+            contentDescription = "Open NativOS controls"
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
             background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 12f * density
-                setColor(Color.argb(180, 25, 25, 25))
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(220, 30, 30, 32))
+                setStroke((1 * density).toInt(), Color.argb(80, 255, 255, 255))
             }
             elevation = 8f * density
             visibility = View.GONE
-            setOnClickListener { MainActivity.toggleKeyboardVisibility(this@KioskActivity) }
+            setOnClickListener { toggleAssistiveMenu() }
         }
         makeDraggable(keyboardButton!!)
         rootLayout!!.addView(keyboardButton, FrameLayout.LayoutParams(
-            (52 * density).toInt(),
+            (48 * density).toInt(),
             (48 * density).toInt(),
             Gravity.TOP or Gravity.END
         ).apply {
             topMargin = (52 * density).toInt()
             rightMargin = (12 * density).toInt()
         })
+
+        assistiveMenu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (8 * density).toInt(),
+                (8 * density).toInt(),
+                (8 * density).toInt(),
+                (8 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 18f * density
+                setColor(Color.argb(245, 24, 24, 26))
+                setStroke((1 * density).toInt(), Color.argb(70, 255, 255, 255))
+            }
+            elevation = 12f * density
+            visibility = View.GONE
+            addAssistiveAction("⌂", "Home") { showLinuxHome() }
+            addAssistiveAction("‹", "Back") { goLinuxBack() }
+            addAssistiveAction("▦", "Recents") { showLinuxHome() }
+            addAssistiveAction("□", "Maximize") { maximizeLinuxWindow() }
+            addAssistiveAction("⌨", "Keyboard") {
+                MainActivity.toggleKeyboardVisibility(this@KioskActivity)
+            }
+            addAssistiveAction("⚙", "Settings") {
+                startActivity(Intent(this@KioskActivity, SettingsActivity::class.java))
+            }
+        }
+        rootLayout!!.addView(assistiveMenu, FrameLayout.LayoutParams(
+            (184 * density).toInt(),
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ))
 
         // Phosh 0.38 has no persistent bottom affordance. Provide a small,
         // functional phone-style handle: tap or swipe it upward to toggle the
@@ -312,8 +377,64 @@ class KioskActivity : Activity() {
         chrootManager = ChrootManager(this)
         rootfsManager = RootfsManager(this)
 
+        requestNotificationPermission()
         startBridgeService()
-        Thread(Runnable { runBootSequence() }, "nativOS-boot").start()
+        startBootSequence()
+    }
+
+    private fun LinearLayout.addAssistiveAction(icon: String, label: String, action: () -> Unit) {
+        val density = resources.displayMetrics.density
+        addView(TextView(this@KioskActivity).apply {
+            text = "$icon   $label"
+            contentDescription = label
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((14 * density).toInt(), 0, (14 * density).toInt(), 0)
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 11f * density
+                setColor(Color.TRANSPARENT)
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                assistiveMenu?.visibility = View.GONE
+                action()
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            (46 * density).toInt()
+        ))
+    }
+
+    private fun toggleAssistiveMenu() {
+        val menu = assistiveMenu ?: return
+        if (menu.visibility == View.VISIBLE) {
+            menu.visibility = View.GONE
+            return
+        }
+        menu.visibility = View.VISIBLE
+        menu.bringToFront()
+        keyboardButton?.bringToFront()
+        menu.post { positionAssistiveMenu() }
+    }
+
+    private fun positionAssistiveMenu() {
+        val parent = rootLayout ?: return
+        val anchor = keyboardButton ?: return
+        val menu = assistiveMenu ?: return
+        val gap = 10f * resources.displayMetrics.density
+        val menuWidth = menu.width.takeIf { it > 0 } ?: menu.measuredWidth
+        val menuHeight = menu.height.takeIf { it > 0 } ?: menu.measuredHeight
+        val proposedX = if (anchor.x + anchor.width / 2f > parent.width / 2f) {
+            anchor.x - menuWidth - gap
+        } else {
+            anchor.x + anchor.width + gap
+        }
+        menu.x = proposedX.coerceIn(0f, (parent.width - menuWidth).coerceAtLeast(0).toFloat())
+        menu.y = anchor.y.coerceIn(0f, (parent.height - menuHeight).coerceAtLeast(0).toFloat())
     }
 
     private fun makeDraggable(view: View) {
@@ -327,6 +448,7 @@ class KioskActivity : Activity() {
         view.setOnTouchListener { target, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (target === keyboardButton) assistiveMenu?.visibility = View.GONE
                     downRawX = event.rawX
                     downRawY = event.rawY
                     startX = target.x
@@ -423,30 +545,117 @@ class KioskActivity : Activity() {
         }, 40)
     }
 
+    private fun sendLinuxKey(keyCode: Int) {
+        val view = desktopView ?: return
+        view.sendKeyEvent(0, keyCode, true)
+        view.postDelayed({
+            if (view.isAttachedToWindow) view.sendKeyEvent(0, keyCode, false)
+        }, 40)
+    }
+
+    private fun showLinuxHome() {
+        Thread({
+            val restored = chrootManager.restoreMaximizedX11Window(focusDesktop = true)
+            if (restored) SystemClock.sleep(160)
+            val focused = chrootManager.focusPhoshWindow()
+            runOnUiThread {
+                if (focused) desktopView?.postDelayed({ togglePhoshOverview() }, 80)
+            }
+        }, "LinuxHome").start()
+    }
+
+    private fun goLinuxBack() {
+        Thread({
+            val restored = chrootManager.restoreMaximizedX11Window(focusDesktop = false)
+            runOnUiThread {
+                desktopView?.postDelayed(
+                    { sendLinuxKey(KeyEvent.KEYCODE_ESCAPE) },
+                    if (restored) 180 else 0
+                )
+            }
+        }, "LinuxBack").start()
+    }
+
+    /** Resize unmanaged X11 apps directly; they have no X11 WM to handle Alt+F10. */
+    private fun maximizeLinuxWindow() {
+        Thread({
+            if (!chrootManager.maximizeActiveX11Window()) {
+                Log.w(TAG, "No active X11 application could be maximized")
+            }
+        }, "MaximizeX11").start()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_NOTIFICATIONS &&
+            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            startForegroundService(Intent(this, BridgeService::class.java).apply {
+                action = BridgeService.ACTION_REFRESH_NOTIFICATION
+            })
+        }
+    }
+
     private fun runBootSequence() {
         try {
             // Step 1: Root check
             updateOverlay(0.0, "Checking root access...", "")
             if (!chrootManager.hasRoot()) {
-                updateOverlay(-1.0, "ERROR: No root access", "NativOS requires a rooted device (Magisk/KernelSU)")
+                waitingForRoot = true
+                updateOverlay(
+                    -1.0,
+                    "Root access required",
+                    "Grant access in Magisk/KernelSU, then tap here to retry"
+                )
+                runOnUiThread {
+                    overlayLayout?.apply {
+                        isClickable = true
+                        isFocusable = true
+                        setOnClickListener { retryAfterRootGrant() }
+                    }
+                }
                 return
+            }
+            waitingForRoot = false
+            SharedFolderSync.start(this)
+            runOnUiThread {
+                overlayLayout?.apply {
+                    isClickable = false
+                    setOnClickListener(null)
+                }
             }
             updateOverlay(0.05, "Root access confirmed", "")
 
             // Step 2: Download + extract rootfs if needed
             if (!rootfsManager.isRootfsReady()) {
-                // Download
-                updateOverlay(0.05, "Downloading Linux filesystem...", "First boot — this takes a few minutes")
-                bootFailed = false
-                rootfsManager.downloadRootfs { progress, status ->
-                    if (progress < 0) {
-                        bootFailed = true
-                        updateOverlay(-1.0, "Download failed", status)
-                    } else {
-                        updateOverlay(0.05 + progress * 0.45, status, "")
-                    }
+                // Production builds carry a ready rootfs. Development builds and
+                // damaged assets retain the resumable Ubuntu download as recovery.
+                val bundled = rootfsManager.stageBundledRootfs { progress, status ->
+                    updateOverlay(0.05 + progress * 0.45, status, "No network required")
                 }
-                if (bootFailed) return
+                if (!bundled) {
+                    updateOverlay(0.05, "Downloading Linux filesystem...", "First boot — this takes a few minutes")
+                    bootFailed = false
+                    rootfsManager.downloadRootfs { progress, status ->
+                        if (progress < 0) {
+                            bootFailed = true
+                            updateOverlay(-1.0, "Download failed", status)
+                        } else {
+                            updateOverlay(0.05 + progress * 0.45, status, "")
+                        }
+                    }
+                    if (bootFailed) return
+                }
 
                 // Extract
                 updateOverlay(0.50, "Extracting Linux filesystem...", "This may take a few minutes")
@@ -526,7 +735,7 @@ class KioskActivity : Activity() {
             }
 
             // Step 5: Attach the display surface to the bundled X11 service process.
-            updateOverlay(0.95, "Starting Display Server...", "Initializing X11")
+            updateOverlay(0.95, "Getting GUI ready...", "Preparing your desktop")
             
             // Android Views and the Termux Activity shim must be created on the UI thread.
             lateinit var lorieView: LorieView
@@ -608,9 +817,23 @@ class KioskActivity : Activity() {
                 }
             ).also { it.connect() }
 
-            if (!rendererAttached.await(10, TimeUnit.SECONDS) || !lorieView.connected()) {
+            if (!rendererAttached.await(10, TimeUnit.SECONDS)) {
                 throw rendererError
-                    ?: IllegalStateException("LorieView failed to attach to the X11 server")
+                    ?: IllegalStateException("Display service connection timed out")
+            }
+            rendererError?.let { throw it }
+
+            // Binder delivers the renderer file descriptor before the native
+            // render thread has necessarily consumed it. Cold boot as the HOME
+            // launcher makes that race visible, so wait briefly for native
+            // readiness instead of treating a successful attachment as failed.
+            val rendererReadyDeadline = SystemClock.elapsedRealtime() + 5_000L
+            while (!lorieView.connected() &&
+                SystemClock.elapsedRealtime() < rendererReadyDeadline) {
+                Thread.sleep(50)
+            }
+            if (!lorieView.connected()) {
+                throw IllegalStateException("Display renderer did not become ready")
             }
 
             Log.i(TAG, "Starting test session...")
@@ -629,8 +852,9 @@ class KioskActivity : Activity() {
                 overlayLayout?.visibility = View.GONE
                 keyboardButton?.visibility = View.VISIBLE
                 keyboardButton?.bringToFront()
-                navigationHandle?.visibility = View.VISIBLE
-                navigationHandle?.bringToFront()
+                // Current Phosh provides its own bottom gesture handle. Keep the
+                // Android overlay handle hidden to avoid duplicate affordances.
+                navigationHandle?.visibility = View.GONE
             }
 
         } catch (e: Exception) {
@@ -656,10 +880,32 @@ class KioskActivity : Activity() {
         }
     }
 
+    @Synchronized
+    private fun startBootSequence() {
+        if (bootSequenceRunning || desktopView != null) return
+        bootSequenceRunning = true
+        Thread({
+            try {
+                runBootSequence()
+            } finally {
+                bootSequenceRunning = false
+            }
+        }, "nativOS-boot").start()
+    }
+
+    private fun retryAfterRootGrant() {
+        waitingForRoot = false
+        updateOverlay(0.0, "Checking root access...", "")
+        startBootSequence()
+    }
+
     override fun onResume() {
         super.onResume()
         enterImmersiveMode()
         AndroidAppIntegration.sync(this)
+        if (waitingForRoot) retryAfterRootGrant()
+
+        val returningFromAndroid = AndroidAppIntegration.consumeAndroidAppReturn()
 
         // A recreated Android Surface may use a multi-buffer queue. Repaint a
         // few frames so every buffer contains the desktop instead of stale
@@ -669,11 +915,65 @@ class KioskActivity : Activity() {
                 MainActivity.getInstance().lorieView?.triggerCallback()
             }, delay)
         }
+
+        // Launching an Android shortcut closes Phosh's overview before Android
+        // takes focus. Returning would therefore show Phosh's valid but empty
+        // black home layer, which looks like a frozen renderer. Reopen the
+        // overview after the recreated Surface has received its first frames.
+        if (returningFromAndroid) {
+            rootLayout?.postDelayed({
+                if (hasWindowFocus() && desktopView?.isAttachedToWindow == true) {
+                    togglePhoshOverview()
+                }
+            }, 400)
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) enterImmersiveMode()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        enterImmersiveMode()
+
+        // The activity is retained across rotation so the X11 connection and
+        // Phosh session stay alive. Recalculate Android's cutout/navigation
+        // safe area, then notify X11 after SurfaceView has its new dimensions.
+        assistiveMenu?.visibility = View.GONE
+        rootLayout?.requestApplyInsets()
+        rootLayout?.post {
+            val parent = rootLayout ?: return@post
+            desktopView?.let { view ->
+                applyDesktopSafeArea(view)
+                view.post {
+                    view.triggerCallback()
+                    view.postDelayed({
+                        val width = view.width
+                        val height = view.height
+                        Thread({
+                            chrootManager.resizePhoshDisplay(width, height)
+                        }, "nativOS-display-resize").start()
+                    }, 150)
+                }
+            }
+            keyboardButton?.let { button ->
+                button.x = button.x.coerceIn(
+                    0f,
+                    (parent.width - button.width).coerceAtLeast(0).toFloat()
+                )
+                button.y = button.y.coerceIn(
+                    0f,
+                    (parent.height - button.height).coerceAtLeast(0).toFloat()
+                )
+            }
+        }
+        Log.i(
+            TAG,
+            "Configuration changed: orientation=${newConfig.orientation}, " +
+                "surface=${rootLayout?.width}x${rootLayout?.height}"
+        )
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -735,10 +1035,12 @@ class KioskActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (activeInstance?.get() === this) activeInstance = null
         x11ServiceClient?.disconnect()
         x11ServiceClient = null
         x11InputController = null
         navigationHandle = null
+        assistiveMenu = null
         desktopView = null
         stopService(Intent(this, X11ServerService::class.java))
         if (::chrootManager.isInitialized) {
